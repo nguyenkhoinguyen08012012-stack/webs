@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Auto File Buttons</title>
+<style>
+    body { font-family: Arial; background:#111; color:white; padding:20px; }
+    button {
+        display:block;
+        width:300px;
+        padding:12px;
+        margin:8px 0;
+        background:#1e90ff;
+        border:none;
+        color:white;
+        font-size:16px;
+        border-radius:6px;
+        cursor:pointer;
+    }
+    button:hover { background:#0b70d1; }
+</style>
+</head>
+<body>
+
+<h2>Files in Repository</h2>
+<div id="fileList">Loading...</div>
+
+<script>
+// CHANGE THESE TWO VALUES
+const username = "nguyenkhoinguyen08012012-stack";
+const repo = "webs";
+
+async function loadFiles() {
+    const url = `https://api.github.com/repos/${username}/${repo}/contents/`;
+    const container = document.getElementById("fileList");
+
+    try {
+        const response = await fetch(url);
+        const files = await response.json();
+
+        container.innerHTML = "";
+
+        files.forEach(item => {
+            if (item.type === "file" && item.name.endsWith(".html")) {
+                const btn = document.createElement("button");
+                btn.textContent = item.name;
+                btn.onclick = () => {
+                    window.open(`https://${username}.github.io/${repo}/${item.name}`, "_blank");
+                };
+                container.appendChild(btn);
+            }
+        });
+
+    } catch (e) {
+        container.innerHTML = "Error loading files.";
+    }
+}
+
+loadFiles();
+</script>
+
+</body>
+</html>
