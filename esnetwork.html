@@ -992,18 +992,18 @@
             .search-input { font-size: 1rem; padding: 15px 20px 15px 45px; }
         }
     </style>
-</head>
-<body data-new-gr-c-s-check-loaded="14.1335.0" data-gr-ext-installed="">
+<style></style></head>
+<body data-new-gr-c-s-check-loaded="14.1335.0" data-gr-ext-installed="" data-gr-agent-presence-bridge-connection-id="1791320153224-0.5232387175743883" data-new-gr-c-s-loaded="14.1335.0">
 
     <canvas id="starfield" width="1247" height="994"></canvas>
     <div class="ambient-glow"></div>
 
     <div id="app-container">
         
-        <main id="home-screen">
+        <main id="home-screen" class="">
             
             <div class="clock-container">
-                <div class="clock-time" id="sys-time">15:52</div>
+                <div class="clock-time" id="sys-time">15:56</div>
                 <div class="clock-date" id="sys-date">Tuesday, October 6, 2026</div>
             </div>
 
@@ -1068,12 +1068,15 @@
             </div>
         </main>
 
-        <div id="browser-screen">
+        <div id="browser-screen" class="">
             
             <header class="browser-header">
                 <div class="tabs-row-container">
-                    <div class="tabs-row" id="tabs-container">
-                        </div>
+                    <div class="tabs-row" id="tabs-container"><div class="tab active">
+                        <div class="tab-icon"><img src="https://www.google.com/s2/favicons?domain=search.brave.com" style="width:14px; height:14px; border-radius:3px;"></div>
+                        <span class="tab-title">search.brave.com</span>
+                        <div class="tab-close" title="Close Tab (Ctrl+W)"><i class="fa-solid fa-xmark"></i></div>
+                    </div></div>
                     <button class="new-tab-btn" onclick="TabManager.createNewTab()" title="New Tab (Ctrl+T)">
                         <i class="fa-solid fa-plus"></i>
                     </button>
@@ -1088,11 +1091,9 @@
                     </div>
 
                     <div class="omnibox-wrapper">
-                        <div class="security-badge" id="security-icon"><i class="fa-solid fa-lock"></i></div>
+                        <div class="security-badge" id="security-icon"><i class="fa-solid fa-lock" style="color:var(--sys-success)"></i></div>
                         <input type="text" class="omnibox-input" id="omnibox" placeholder="Search Google or type a URL" autocomplete="off">
-                        <button class="bookmark-btn" id="btn-bookmark" onclick="BookmarkManager.toggleCurrent()" title="Bookmark this page">
-                            <i class="fa-regular fa-star"></i>
-                        </button>
+                        <button class="bookmark-btn" id="btn-bookmark" onclick="BookmarkManager.toggleCurrent()" title="Bookmark this page"><i class="fa-regular fa-star"></i></button>
                     </div>
                     
                     <div class="nav-group">
@@ -1105,11 +1106,11 @@
             </header>
 
             <div class="viewport-container">
-                <div class="loading-overlay" id="loader">
+                <div class="loading-overlay" id="loader" style="opacity: 0;">
                     <div class="loader-spinner"></div>
                     <div class="loader-text">ESTABLISHING CONNECTION...</div>
                 </div>
-                <iframe id="proxy-frame" class="proxy-frame" sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals"></iframe>
+                <iframe id="proxy-frame" class="proxy-frame" sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals" src="about:blank"></iframe>
             </div>
         </div>
 
@@ -1152,7 +1153,7 @@
         </div>
     </div>
 
-    <div id="context-menu" class="show" style="left: 727px; top: 226px;">
+    <div id="context-menu" class="" style="left: 727px; top: 226px;">
         <div class="context-item" onclick="BrowserSys.goBack()"><i class="fa-solid fa-arrow-left"></i> Back</div>
         <div class="context-item" onclick="BrowserSys.goForward()"><i class="fa-solid fa-arrow-right"></i> Forward</div>
         <div class="context-item" onclick="BrowserSys.reloadFrame()"><i class="fa-solid fa-rotate-right"></i> Reload</div>
@@ -1871,4 +1872,4 @@
 
     </script>
 
-</body></html>
+</body><grammarly-desktop-integration data-grammarly-shadow-root="true" style="visibility: visible !important;"></grammarly-desktop-integration></html>
