@@ -1,0 +1,4861 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0b10">
+  <meta name="description" content="A fast, mobile-friendly manga and image reader with multiple sources, chapter scanning, saved groups, and offline-friendly page loading.">
+  <title>Manga / Image Reader</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%238b5cf6'/><path d='M27 28h22c8 0 14 6 14 14v30H41c-8 0-14-6-14-14V28Z' fill='%23fff' opacity='.95'/><path d='M73 28H59v44h14V28Z' fill='%23fff' opacity='.55'/></svg>">
+  <style>
+    :root {
+      --bg: #0b0b10;
+      --bg2: #101018;
+      --panel: #16161f;
+      --panel2: #20202d;
+      --panel3: #29293b;
+      --text: #f4f4f8;
+      --muted: #a6a6b8;
+      --line: #323242;
+      --accent: #8b5cf6;
+      --accent-2: #22d3ee;
+      --ok: #22c55e;
+      --bad: #ef4444;
+      --warn: #f59e0b;
+      --page-width: 920px;
+      --shadow: 0 18px 44px rgba(0, 0, 0, .45);
+      --radius: 14px;
+      --panel-hide-distance: 100vh;
+      --header-offset: calc(-1 * var(--panel-hide-distance));
+    }
+
+    * { box-sizing: border-box; }
+
+    [hidden] { display: none !important; }
+
+    html {
+      color-scheme: dark;
+      scrollbar-color: #3c3c50 transparent;
+      scrollbar-width: thin;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      background:
+        radial-gradient(1100px 620px at 50% -18%, rgba(139, 92, 246, .16), transparent 62%),
+        radial-gradient(900px 520px at 100% 100%, rgba(34, 211, 238, .08), transparent 60%),
+        var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow-x: hidden;
+      -webkit-text-size-adjust: 100%;
+    }
+
+    body.help-open,
+    body.lightbox-open { overflow: hidden; }
+
+    button, input, select { font: inherit; }
+
+    :focus-visible {
+      outline: 2px solid var(--accent-2);
+      outline-offset: 2px;
+    }
+
+    .skip-link {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      z-index: 3000;
+      padding: 10px 14px;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #fff;
+      text-decoration: none;
+      transform: translateY(-160%);
+      transition: transform .15s ease;
+    }
+
+    .skip-link:focus { transform: translateY(0); }
+
+    /* ---------- control panel ---------- */
+    .panel {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 60;
+      padding: 12px;
+      padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+      background: rgba(13, 13, 20, .97);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--line);
+      box-shadow: 0 18px 40px rgba(0, 0, 0, .5);
+      transform: translateY(var(--header-offset));
+      transition: transform .24s cubic-bezier(.2, .8, .2, 1);
+      max-height: calc(100dvh - 8px);
+      overflow-y: auto;
+      overflow-x: hidden;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
+      scrollbar-gutter: stable;
+    }
+
+    .panel.is-open { transform: translateY(0); }
+
+    .toolbar {
+      max-width: 1250px;
+      width: 100%;
+      margin: 0 auto;
+      display: grid;
+      gap: 10px;
+      min-width: 0;
+      padding-bottom: 64px;
+    }
+
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .row > * { min-width: 0; max-width: 100%; }
+
+    .box {
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, .028);
+      border-radius: var(--radius);
+      padding: 11px;
+      display: grid;
+      gap: 9px;
+    }
+
+    label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: .01em;
+    }
+
+    input, select, button {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+      color: var(--text);
+      padding: 10px 12px;
+      outline: none;
+      font-size: 14px;
+      max-width: 100%;
+      transition: border-color .15s ease, background .15s ease, transform .08s ease;
+    }
+
+    input::placeholder { color: #6f6f83; }
+
+    input:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(139, 92, 246, .16);
+    }
+
+    button {
+      cursor: pointer;
+      background: var(--panel2);
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+
+    button:hover:not(:disabled) {
+      border-color: var(--accent);
+      background: var(--panel3);
+    }
+
+    button:active:not(:disabled) { transform: translateY(1px); }
+
+    button.primary {
+      background: linear-gradient(150deg, #9b6dff, #7c3aed);
+      border-color: #8b5cf6;
+      color: #fff;
+      font-weight: 800;
+    }
+
+    button.primary:hover:not(:disabled) {
+      background: linear-gradient(150deg, #ac85ff, #8b5cf6);
+    }
+
+    button.danger:hover:not(:disabled) { border-color: var(--bad); }
+    button.good:hover:not(:disabled) { border-color: var(--ok); }
+
+    button:disabled { opacity: .5; cursor: not-allowed; }
+
+    input[type="file"] {
+      padding: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .url { min-width: min(100%, 560px); flex: 1; }
+    .name { min-width: 220px; flex: 1; }
+    .small { width: 104px; }
+    .tiny { width: 76px; }
+    .suffix { width: 122px; }
+
+    .preview-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .preview-row code {
+      color: #e9d5ff;
+      background: rgba(139, 92, 246, .14);
+      border: 1px solid rgba(139, 92, 246, .22);
+      padding: 5px 8px;
+      border-radius: 8px;
+      overflow-wrap: anywhere;
+    }
+
+    .preview-row .btn {
+      flex: 0 0 auto;
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+
+    .notice {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      border-left: 3px solid var(--accent);
+      padding-left: 11px;
+    }
+
+    .notice.warn { border-left-color: var(--warn); }
+
+    .notice a { color: #c4b5fd; }
+
+    /* ---------- link opener ---------- */
+    .link-box {
+      border: 1px solid rgba(139, 92, 246, .38);
+      background:
+        radial-gradient(120% 140% at 0% 0%, rgba(139, 92, 246, .17), transparent 55%),
+        rgba(255, 255, 255, .03);
+      border-radius: var(--radius);
+      padding: 12px;
+      display: grid;
+      gap: 9px;
+    }
+
+    .link-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .link-row input {
+      flex: 1 1 320px;
+      min-width: 0;
+      font-size: 15px;
+    }
+
+    .link-row button { flex: 0 0 auto; min-height: 42px; }
+
+    .link-hint {
+      color: var(--muted);
+      font-size: 12.5px;
+      line-height: 1.45;
+    }
+
+    .link-hint b { color: #cbb8ff; font-weight: 700; }
+
+    .link-results {
+      display: grid;
+      gap: 6px;
+      max-height: 250px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .link-results[hidden] { display: none; }
+
+    .link-results[aria-busy="true"] .link-result { opacity: .55; }
+
+    .link-result {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      text-align: left;
+      padding: 7px 9px;
+      background: rgba(255, 255, 255, .035);
+    }
+
+    .link-result:hover:not(:disabled) { background: rgba(139, 92, 246, .16); }
+
+    .link-result.is-best {
+      background: rgba(139, 92, 246, .14);
+      box-shadow: inset 2px 0 0 #a78bfa;
+    }
+
+    .link-result.is-best .link-result-text span { color: #c4b5fd; }
+
+    .link-result img {
+      width: 36px;
+      height: 50px;
+      object-fit: cover;
+      border-radius: 6px;
+      flex: 0 0 auto;
+      background: var(--panel);
+    }
+
+    .link-result-text {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .link-result-text b {
+      font-size: 13.5px;
+      line-height: 1.3;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+
+    .link-result-text span {
+      color: var(--muted);
+      font-size: 11.5px;
+    }
+
+    .link-empty {
+      color: var(--muted);
+      font-size: 12.5px;
+      line-height: 1.5;
+      padding: 4px 2px;
+    }
+
+    .link-empty a { color: #c4b5fd; }
+
+    /* ---------- chapter picker ---------- */
+    .chapter-picker {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, .022);
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .chapter-picker[hidden] { display: none; }
+
+    .chapter-picker-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .chapter-picker-head label {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 55%;
+    }
+
+    .chapter-picker-count {
+      color: var(--muted);
+      font-size: 12px;
+      margin-right: auto;
+    }
+
+    .chapter-picker-head .btn {
+      min-height: 30px;
+      padding: 4px 10px;
+      font-size: 12px;
+    }
+
+    #chapterFilter,
+    #chapterSelect {
+      width: 100%;
+      min-width: 0;
+    }
+
+    #chapterSelect { max-height: 220px; }
+
+    .chapter-picker-hint {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    /* ---------- collapsible advanced settings ---------- */
+    .advanced {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, .022);
+      padding: 0 11px 11px;
+    }
+
+    .advanced > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 12px 2px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: .01em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      user-select: none;
+    }
+
+    .advanced > summary::-webkit-details-marker { display: none; }
+
+    .advanced > summary::before {
+      content: "▸";
+      color: var(--accent);
+      transition: transform .15s ease;
+    }
+
+    .advanced[open] > summary::before { transform: rotate(90deg); }
+
+    .advanced[open] > summary { border-bottom: 1px solid var(--line); margin-bottom: 10px; }
+
+    .advanced-body { display: grid; gap: 9px; }
+
+    .actions { margin-top: 2px; }
+    .actions button { min-height: 42px; }
+
+    #copyPreviewBtn,
+    #testBtn { border-color: var(--line); }
+
+    /* ---------- floating tab ---------- */
+    .panel-tab {
+      position: fixed;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1000;
+      background: rgba(22, 22, 32, .98);
+      border: 1px solid var(--line);
+      border-top: none;
+      border-radius: 0 0 14px 14px;
+      padding: 10px 22px;
+      min-height: 48px;
+      min-width: 118px;
+      text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+      box-shadow: 0 8px 22px rgba(0, 0, 0, .35);
+    }
+
+    .panel-tab:hover { color: var(--text); border-color: #4a4a60; }
+
+    .tab-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #57576b;
+      flex: 0 0 auto;
+    }
+
+    .panel-tab.is-loading .tab-dot {
+      background: var(--accent-2);
+      box-shadow: 0 0 0 0 rgba(34, 211, 238, .55);
+      animation: pulse 1.15s ease-out infinite;
+    }
+
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(34, 211, 238, .55); }
+      100% { box-shadow: 0 0 0 10px rgba(34, 211, 238, 0); }
+    }
+
+    /* ---------- status ---------- */
+    #status {
+      position: fixed;
+      left: 50%;
+      top: calc(58px + env(safe-area-inset-top, 0px));
+      transform: translateX(-50%);
+      z-index: 1100;
+      color: var(--muted);
+      background: rgba(13, 13, 20, .9);
+      backdrop-filter: blur(10px);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px 14px;
+      max-width: min(94vw, 1000px);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      pointer-events: none;
+      display: none;
+      font-size: 13px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .3);
+    }
+
+    #status.has-status { display: block; }
+
+    header.is-open ~ #status.has-status {
+      top: auto;
+      bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+    }
+    .status-ok { color: #86efac !important; }
+    .status-bad { color: #fca5a5 !important; }
+    .status-warn { color: #fcd34d !important; }
+
+    /* ---------- reader ---------- */
+    main {
+      max-width: 1250px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 66px 10px calc(90px + env(safe-area-inset-bottom, 0px));
+      min-width: 0;
+    }
+
+    #pages {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .page-wrap {
+      width: 100%;
+      display: flex;
+      justify-content: center;
+      position: relative;
+      margin: 0;
+      border-radius: 8px;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px) 0 0 / 26px 26px,
+        linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px) 0 0 / 26px 26px,
+        #09090d;
+      min-height: 180px;
+      overflow: hidden;
+    }
+
+    .page-wrap img {
+      width: min(100%, var(--page-width));
+      height: auto;
+      display: block;
+      border-radius: 6px;
+      background: #09090d;
+      box-shadow: var(--shadow);
+      cursor: zoom-in;
+      opacity: 0;
+      transition: opacity .2s ease;
+    }
+
+    .page-wrap.is-loaded img { opacity: 1; }
+    .page-wrap.is-error img { opacity: .12; }
+
+    .page-wrap img:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 3px;
+    }
+
+    .page-badge {
+      position: absolute;
+      right: 10px;
+      bottom: 10px;
+      display: flex;
+      gap: 5px;
+      align-items: center;
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: rgba(8, 8, 12, .78);
+      border: 1px solid rgba(255, 255, 255, .12);
+      color: #d8d8e4;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .04em;
+      backdrop-filter: blur(8px);
+      pointer-events: none;
+    }
+
+    .page-badge .src {
+      color: #67e8f9;
+      border-left: 1px solid rgba(255,255,255,.18);
+      padding-left: 5px;
+    }
+
+    .page-error {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      background: rgba(10, 10, 15, .9);
+      color: var(--muted);
+      text-align: center;
+      padding: 20px;
+      font-size: 14px;
+    }
+
+    .page-error .btn {
+      padding: 8px 14px;
+      font-size: 13px;
+    }
+
+    .empty {
+      width: 100%;
+      text-align: center;
+      color: var(--muted);
+      border: 1px dashed var(--line);
+      border-radius: 18px;
+      padding: 46px 16px;
+      background: rgba(255, 255, 255, .02);
+      line-height: 1.6;
+    }
+
+    .empty b { color: var(--text); }
+
+    .bottom-nav {
+      max-width: min(100%, var(--page-width));
+      margin: 30px auto 12px;
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      align-items: center;
+      padding: 0 10px;
+    }
+
+    .bottom-nav button {
+      flex: 1;
+      min-height: 54px;
+      font-size: 16px;
+      font-weight: 800;
+      border-radius: 14px;
+    }
+
+    .bottom-nav .chapter-label {
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+      min-width: 140px;
+      line-height: 1.4;
+    }
+
+    /* ---------- reading HUD ---------- */
+    .reading-hud {
+      position: fixed;
+      left: calc(12px + env(safe-area-inset-left, 0px));
+      bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+      z-index: 45;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(13, 13, 20, .9);
+      backdrop-filter: blur(10px);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
+      pointer-events: none;
+      max-width: calc(100vw - 24px);
+    }
+
+    .reading-hud b { color: var(--text); }
+    .reading-hud .sep { color: #56566c; }
+
+    /* ---------- help ---------- */
+    .help-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 2000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 14px;
+      background: rgba(0, 0, 0, .7);
+      backdrop-filter: blur(6px);
+    }
+
+    .help-overlay.show { display: flex; }
+
+    .help-dialog {
+      width: min(760px, 100%);
+      max-height: min(88dvh, 840px);
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, .6);
+      overflow: hidden;
+    }
+
+    .help-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .help-title { font-size: 20px; font-weight: 800; }
+    .help-subtitle { color: var(--muted); font-size: 13px; margin-top: 3px; }
+
+    .help-close {
+      width: 46px;
+      height: 46px;
+      padding: 0;
+      font-size: 28px;
+      line-height: 1;
+      flex: 0 0 46px;
+    }
+
+    .help-tabs {
+      display: flex;
+      gap: 6px;
+      padding: 10px 14px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .help-tab {
+      flex: 1;
+      min-height: 44px;
+      font-weight: 700;
+      border-radius: 10px 10px 0 0;
+    }
+
+    .help-tab.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .help-content {
+      overflow-y: auto;
+      padding: 14px 16px 20px;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+    }
+
+    .help-section {
+      padding: 12px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, .08);
+    }
+
+    .help-section:last-child { border-bottom: 0; }
+
+    .help-section h3 { margin: 0 0 7px; font-size: 15px; }
+
+    .help-section p {
+      margin: 6px 0;
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 14px;
+    }
+
+    .help-grid,
+    .quick-setup {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .quick-setup { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+    .help-grid > div,
+    .quick-setup > div,
+    .advanced-list > div {
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, .02);
+      border-radius: 10px;
+      padding: 9px 10px;
+      min-width: 0;
+    }
+
+    .help-grid b,
+    .quick-setup b,
+    .advanced-list b {
+      display: block;
+      font-size: 13px;
+    }
+
+    .help-grid span,
+    .quick-setup span,
+    .advanced-list p {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+      margin-top: 3px;
+    }
+
+    .advanced-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .advanced-list p { margin: 4px 0 0; font-size: 13px; }
+
+    .help-shortcuts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-top: 8px;
+    }
+
+    .help-shortcuts span {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .help-footer {
+      padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+      border-top: 1px solid var(--line);
+    }
+
+    .help-footer button { width: 100%; min-height: 46px; }
+
+    /* ---------- lightbox ---------- */
+    .lightbox {
+      position: fixed;
+      inset: 0;
+      z-index: 2500;
+      display: flex;
+      flex-direction: column;
+      background: rgba(4, 4, 8, .96);
+      backdrop-filter: blur(10px);
+    }
+
+    .lightbox-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(13, 13, 20, .9);
+    }
+
+    .lightbox-caption {
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 700;
+      min-width: 120px;
+    }
+
+    .lightbox-actions {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .lightbox-actions button,
+    .lightbox-actions a.btn {
+      min-height: 40px;
+      padding: 8px 12px;
+      font-size: 13px;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--panel2);
+      color: var(--text);
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .lightbox-actions a.btn:hover { border-color: var(--accent); }
+
+    .lightbox-stage {
+      flex: 1;
+      overflow: auto;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 12px;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+    }
+
+    .lightbox-stage img {
+      display: block;
+      width: auto;
+      max-width: 100%;
+      max-height: calc(100dvh - 100px);
+      border-radius: 6px;
+      box-shadow: 0 20px 70px rgba(0, 0, 0, .6);
+      cursor: zoom-out;
+    }
+
+    /* ---------- responsive ---------- */
+    @media (max-width: 720px) {
+      .toolbar { gap: 8px; }
+      .box { padding: 9px; }
+      .row { gap: 7px; }
+      .row > button { min-height: 44px; }
+      .link-box { padding: 10px; }
+      .link-row { gap: 7px; }
+      .link-row input { flex-basis: 100%; }
+      .link-row button { flex: 1 1 auto; min-height: 44px; }
+      .link-result { padding: 7px; }
+      .chapter-picker { padding: 9px; }
+      .chapter-picker-head label { max-width: 100%; }
+      .advanced { padding: 0 9px 9px; }
+      .panel { padding: 10px 8px calc(10px + env(safe-area-inset-bottom, 0px)); }
+      .url, .name { min-width: 100%; }
+      .small, .tiny, .suffix { width: calc(50% - 6px); }
+      button { flex: 1; }
+      .preview-row .btn { flex: 0 0 auto; }
+      main { padding-left: 0; padding-right: 0; }
+      #pages { gap: 8px; }
+      .page-wrap { border-radius: 0; }
+      .page-wrap img { border-radius: 0; box-shadow: none; }
+      #status { top: 62px; font-size: 12px; }
+      .bottom-nav { flex-direction: column; max-width: 100%; }
+      .bottom-nav button { width: 100%; }
+      .reading-hud { font-size: 11px; padding: 7px 10px; }
+      .help-overlay { padding: 8px; align-items: stretch; }
+      .help-dialog { width: 100%; max-height: calc(100dvh - 16px); border-radius: 16px; }
+      .help-title { font-size: 18px; }
+      .help-grid { grid-template-columns: 1fr; }
+      .quick-setup { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .help-close, .help-footer button { min-height: 48px; }
+    }
+
+    @media (max-width: 430px) {
+      .panel { padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px)); }
+      .toolbar { padding-bottom: 110px; }
+      .panel-tab { min-width: 136px; min-height: 52px; padding: 11px 24px; font-size: 15px; }
+      .url, .name, .small, .tiny, .suffix { width: 100%; min-width: 0; }
+      .row > button { flex: 1 1 100%; }
+      .link-row button { flex: 1 1 100%; }
+      .link-result img { width: 32px; height: 44px; }
+      .help-overlay { padding: 0; }
+      .help-dialog { max-height: 100dvh; height: 100dvh; border-radius: 0; }
+      .help-header { padding: 12px; }
+      .help-content { padding: 8px 12px 24px; }
+      .help-section h3 { font-size: 14px; }
+      .help-section p { font-size: 13px; }
+      .lightbox-bar { padding: 8px; }
+      .lightbox-actions { width: 100%; }
+      .lightbox-actions button, .lightbox-actions a.btn { flex: 1 1 auto; font-size: 12px; padding: 8px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: .001ms !important;
+        transition-duration: .001ms !important;
+        scroll-behavior: auto !important;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <a class="skip-link" href="#pages">Skip to pages</a>
+  <div id="topHotZone" aria-hidden="true"></div>
+
+  <header id="controlPanel" class="panel" aria-label="Reader controls" aria-hidden="true">
+    <div class="toolbar">
+      <div class="row">
+        <label for="groupSelect">Group</label>
+        <select id="groupSelect"></select>
+        <input id="groupName" class="name" placeholder="Group name" autocomplete="off">
+        <button id="newGroupBtn" type="button">New Group</button>
+        <button id="saveGroupBtn" class="good" type="button">Save Group</button>
+        <button id="deleteGroupBtn" class="danger" type="button">Delete Group</button>
+        <button id="exportBtn" type="button">Export Settings</button>
+        <label style="display:flex;align-items:center;gap:7px;">
+          Import
+          <input id="importInput" type="file" accept="application/json,.json">
+        </label>
+      </div>
+
+      <div class="link-box">
+        <label for="linkInput">Open from WeebCentral</label>
+        <div class="link-row">
+          <input id="linkInput" type="text" placeholder="Paste a chapter or series link, or type a title" autocomplete="off" spellcheck="false" autocapitalize="off" enterkeyhint="go">
+          <button id="linkBtn" class="primary" type="button">Open / Search</button>
+        </div>
+        <div class="link-hint">Paste <b>weebcentral.com/chapters/…</b> or <b>/series/…</b>, or type a series title. Results appear as you type.</div>
+        <div id="linkResults" class="link-results" role="group" aria-label="WeebCentral search results" hidden></div>
+      </div>
+
+      <div id="chapterPicker" class="chapter-picker" hidden>
+        <div class="chapter-picker-head">
+          <label id="chapterPickerLabel" for="chapterSelect">Chapters</label>
+          <span id="chapterPickerCount" class="chapter-picker-count"></span>
+          <button id="chapterListBtn" class="btn" type="button">Refresh</button>
+        </div>
+        <input id="chapterFilter" type="search" placeholder="Filter chapters (for example 1198)" aria-label="Filter chapter list" autocomplete="off">
+        <select id="chapterSelect" aria-label="Choose a chapter"></select>
+        <div class="chapter-picker-hint">Choosing a chapter loads its pages from the WeebCentral-derived image source.</div>
+      </div>
+
+      <div class="row actions">
+        <button id="loadBtn" type="button">Load / Filter Pages</button>
+        <button id="latestBtn" type="button">Latest Chapter</button>
+        <button id="prevChapterBtn" type="button">Previous Chapter</button>
+        <button id="nextChapterBtn" type="button">Next Chapter</button>
+        <label style="display:flex;align-items:center;gap:6px;">
+          Auto next
+          <input id="autoNextCount" class="tiny" type="number" min="1" max="100" value="5" aria-label="Chapters to auto load">
+        </label>
+        <button id="autoNextBtn" class="good" type="button">Load Next</button>
+        <button id="stopBtn" type="button" disabled>Stop</button>
+        <button id="helpBtn" type="button">How to Use</button>
+        <button id="clearBtn" type="button">Clear</button>
+        <button id="hidePanelBtn" type="button">Hide Panel</button>
+      </div>
+
+      <details id="advancedSettings" class="advanced">
+        <summary>Source pattern &amp; scan settings</summary>
+        <div class="advanced-body">
+          <div class="box">
+            <div class="row">
+              <label for="base1">Source URL prefix 1</label>
+              <input id="base1" class="url" value="https://example.com/manga/Title/" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="row">
+              <label for="base2">Source URL prefix 2 (backup)</label>
+              <input id="base2" class="url" value="https://backup.example.com/manga/Title/" autocomplete="off" spellcheck="false">
+            </div>
+          </div>
+
+          <div class="box">
+            <div class="row">
+              <label for="chapterBox">Chapter box</label>
+              <input id="chapterBox" class="small" value="0001" autocomplete="off">
+              <label for="chapterPad">Chapter pad</label>
+              <input id="chapterPad" class="tiny" type="number" min="0" max="8" value="4">
+              <label for="separator">Separator</label>
+              <input id="separator" class="tiny" value="-" autocomplete="off">
+              <label for="pageBox">Page start box</label>
+              <input id="pageBox" class="small" value="001" autocomplete="off">
+              <label for="pagePad">Page pad</label>
+              <input id="pagePad" class="tiny" type="number" min="0" max="8" value="3">
+              <label for="suffix">Suffix</label>
+              <input id="suffix" class="suffix" value=".png" autocomplete="off" spellcheck="false">
+            </div>
+          </div>
+
+          <div class="box">
+            <div class="row">
+              <label for="maxPages">Max pages</label>
+              <input id="maxPages" class="small" type="number" min="1" max="300" value="60">
+              <label for="missLimit">Stop after missing</label>
+              <input id="missLimit" class="small" type="number" min="1" max="30" value="5">
+              <label for="retryCount">Retry times</label>
+              <input id="retryCount" class="small" type="number" min="0" max="20" value="3" title="Extra attempts after a page fails">
+              <label for="retryWait">Retry wait (ms)</label>
+              <input id="retryWait" class="small" type="number" min="0" max="10000" value="800" title="Wait between retry attempts">
+            </div>
+            <div class="row">
+              <label for="latestScanLimit">Latest scan</label>
+              <input id="latestScanLimit" class="small" type="number" min="1" max="2000" value="300">
+              <label for="latestMissLimit">Missing chapters</label>
+              <input id="latestMissLimit" class="small" type="number" min="1" max="50" value="10">
+              <label for="width">Reader width</label>
+              <select id="width">
+                <option value="720">Small</option>
+                <option value="920" selected>Normal</option>
+                <option value="1100">Large</option>
+                <option value="1400">XL</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="preview-row">
+            <span>Preview source 1:</span>
+            <code id="previewUrl"></code>
+            <button id="copyPreviewBtn" class="btn" type="button">Copy</button>
+            <button id="testBtn" class="btn" type="button">Test</button>
+          </div>
+
+          <div class="notice">
+            Shortcuts: <b>P</b> panel, <b>R</b> reload, <b>←</b>/<b>→</b> chapter, <b>Esc</b> close.
+            Source 2 is used automatically when Source 1 fails.
+          </div>
+        </div>
+      </details>
+    </div>
+  </header>
+
+  <div id="panelTab" class="panel-tab" role="button" tabindex="0" aria-controls="controlPanel" aria-expanded="false" aria-label="Open reader menu">
+    <span class="tab-dot" aria-hidden="true"></span>
+    <span id="panelTabLabel">Menu</span>
+  </div>
+
+  <div id="status" role="status" aria-live="polite"></div>
+
+  <main>
+    <div id="pages">
+      <div class="empty">
+        Paste a <b>WeebCentral</b> chapter or series link in the menu, or type a series title to search. Then tap <b>Open / Search</b>.
+      </div>
+    </div>
+
+    <div id="bottomChapterNav" class="bottom-nav">
+      <button id="bottomPrevChapterBtn" type="button">← Previous Chapter</button>
+      <div id="bottomChapterLabel" class="chapter-label">Chapter 0001</div>
+      <button id="bottomNextChapterBtn" class="primary" type="button">Next Chapter →</button>
+    </div>
+  </main>
+
+  <div id="readingHud" class="reading-hud" hidden>
+    <b id="hudChapter">Chapter 0001</b>
+    <span class="sep">·</span>
+    <span id="hudPages">0 pages</span>
+    <span class="sep">·</span>
+    <span id="hudPosition">—</span>
+  </div>
+
+  <div id="lightbox" class="lightbox" role="dialog" aria-modal="true" aria-label="Page preview" hidden>
+    <div class="lightbox-bar">
+      <div id="lightboxCaption" class="lightbox-caption">Page</div>
+      <div class="lightbox-actions">
+        <button id="lbPrev" type="button">← Prev</button>
+        <button id="lbNext" type="button">Next →</button>
+        <button id="lbZoomOut" type="button" aria-label="Zoom out">−</button>
+        <button id="lbZoomFit" type="button">Fit</button>
+        <button id="lbZoomIn" type="button" aria-label="Zoom in">+</button>
+        <a id="lbOpen" class="btn" href="#" target="_blank" rel="noopener noreferrer">Open</a>
+        <a id="lbDownload" class="btn" href="#" download>Download</a>
+        <button id="lbClose" type="button">Close</button>
+      </div>
+    </div>
+    <div id="lightboxStage" class="lightbox-stage">
+      <img id="lightboxImg" alt="">
+    </div>
+  </div>
+
+  <div id="helpOverlay" class="help-overlay" aria-hidden="true">
+    <div id="helpDialog" class="help-dialog" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+      <div class="help-header">
+        <div>
+          <div id="helpTitle" class="help-title">How to use the reader</div>
+          <div id="helpSubtitle" class="help-subtitle">Fast setup and easy navigation</div>
+        </div>
+        <button id="helpCloseBtn" class="help-close" type="button" aria-label="Close help">×</button>
+      </div>
+
+      <div class="help-tabs">
+        <button id="quickHelpTab" class="help-tab active" type="button">Quick Start</button>
+        <button id="advancedHelpTab" class="help-tab" type="button">Advanced Guide</button>
+      </div>
+
+      <div id="quickHelpContent" class="help-content">
+        <section class="help-section">
+          <h3>Fastest way to read</h3>
+          <p>Paste a WeebCentral chapter or series link into <b>Open from WeebCentral</b>, then tap <b>Open / Search</b>. A series link opens its newest chapter; a chapter link opens that exact chapter.</p>
+          <p>Pages appear first. The <b>Chapters</b> picker fills in a moment later, once the complete list has loaded.</p>
+          <p>No link yet? Type the series title in the same box. Results update as you type, and the closest match is highlighted at the top; pick a cover to open that series.</p>
+          <p>After a series opens, use the <b>Chapters</b> picker to jump to any chapter. <b>Refresh</b> re-fetches the complete chapter list.</p>
+          <p>Using a different image host? Open <b>Source pattern &amp; scan settings</b> and fill in the URL fields.</p>
+        </section>
+        <section class="help-section">
+          <h3>Fast navigation</h3>
+          <p><b>Previous Chapter</b> opens the older chapter and replaces the view. <b>Next Chapter</b> opens the newer chapter and appends it. Enter a number in <b>Auto next</b> and tap <b>Load Next</b> to add several chapters automatically.</p>
+        </section>
+        <section class="help-section">
+          <h3>Reader basics</h3>
+          <div class="quick-setup">
+            <div><b>Stop</b><span>Cancel a long scan safely.</span></div>
+            <div><b>Click a page</b><span>Open the zoomable lightbox.</span></div>
+            <div><b>Page HUD</b><span>See your current page while scrolling.</span></div>
+            <div><b>Backup retry</b><span>Failed pages try Source 2 automatically.</span></div>
+          </div>
+        </section>
+        <section class="help-section">
+          <h3>Phone</h3>
+          <p>Tap <b>Menu</b> to open the controls. Scroll inside the menu. Use <b>Hide Panel</b> or tap outside to close it.</p>
+        </section>
+      </div>
+
+      <div id="advancedHelpContent" class="help-content" hidden>
+        <section class="help-section">
+          <h3>Every button &amp; box</h3>
+          <div class="advanced-list">
+            <div><b>Open from WeebCentral</b><p>Paste a chapter link, a series link, or type a title. WeebCentral links fill the source pattern and load exact page images automatically.</p></div>
+            <div><b>Open / Search</b><p>Opens a pasted link. If you typed a title instead, it searches WeebCentral and shows matching series below the box.</p></div>
+            <div><b>Search results</b><p>Results update as you type and include every match WeebCentral returns, with the closest title highlighted first. Tap a cover or title to open that series at its newest chapter.</p></div>
+            <div><b>Chapters picker</b><p>Lists every chapter in the open series. Filter by number, or choose a chapter to load it. Refresh reloads the complete list from WeebCentral.</p></div>
+            <div><b>Source pattern &amp; scan settings</b><p>Expand this only for custom image hosts or manual URL patterns. Link loading fills these fields for you.</p></div>
+
+            <div><b>Group</b><p>Selects a saved settings/source group.</p></div>
+            <div><b>Group name</b><p>Name used when saving or renaming the current group.</p></div>
+            <div><b>New Group</b><p>Creates a blank settings group.</p></div>
+            <div><b>Save Group</b><p>Saves the current source, chapter, page, retry, scan and display settings. Renaming moves the group.</p></div>
+            <div><b>Delete Group</b><p>Deletes the selected saved group after confirmation.</p></div>
+            <div><b>Export Settings</b><p>Downloads your saved groups as a JSON backup file.</p></div>
+            <div><b>Import</b><p>Loads a previously exported JSON settings file.</p></div>
+
+            <div><b>Source URL prefix 1</b><p>Primary image source. The reader builds each image URL from this prefix plus the chapter/page pattern. Link loading fills this automatically.</p></div>
+            <div><b>Source URL prefix 2</b><p>Backup image source. It is checked when Source 1 fails and is retried if a page later breaks.</p></div>
+            <div><b>Chapter box</b><p>Current chapter number/text. Link loading fills this automatically.</p></div>
+            <div><b>Chapter pad</b><p>Number of leading zeros used for chapters. Example: 4 makes 12 become 0012.</p></div>
+            <div><b>Separator</b><p>Characters between chapter and page, such as a dash.</p></div>
+            <div><b>Page start box</b><p>First page number to check.</p></div>
+            <div><b>Page pad</b><p>Number of leading zeros used for pages. Example: 3 makes 1 become 001.</p></div>
+            <div><b>Suffix</b><p>File ending added to the URL, such as .png or .jpg.</p></div>
+            <div><b>Preview source 1</b><p>Shows the URL created from the current chapter/page settings. Copy it or test it directly.</p></div>
+
+            <div><b>Max pages</b><p>Maximum number of pages checked for one chapter.</p></div>
+            <div><b>Stop after missing</b><p>Number of consecutive missing pages in a row before the scan stops. A low value stops a blank chapter quickly; a higher value tolerates a few gaps between pages.</p></div>
+            <div><b>Retry times</b><p>Extra attempts after a page fails. 0 means no retries.</p></div>
+            <div><b>Retry wait (ms)</b><p>Delay between failed attempts. A successful page stops retrying immediately.</p></div>
+            <div><b>Latest scan</b><p>Maximum forward chapter range used by Latest Chapter.</p></div>
+            <div><b>Missing chapters</b><p>Consecutive missing chapters allowed before the latest scan stops.</p></div>
+            <div><b>Reader width</b><p>Maximum manga display width: Small, Normal, Large, or XL.</p></div>
+
+            <div><b>Load / Filter Pages</b><p>Starts a fresh load from the current URL pattern and clears the current page list before scanning.</p></div>
+            <div><b>Latest Chapter</b><p>Refreshes the linked series and opens its newest chapter. Without a link, it searches forward using the chapter pattern.</p></div>
+            <div><b>Previous Chapter</b><p>Opens the older chapter, resets to page 1, and replaces the pages.</p></div>
+            <div><b>Next Chapter</b><p>Opens the newer chapter, resets to page 1, and appends its pages without clearing existing pages.</p></div>
+            <div><b>Auto next</b><p>Number of chapters to automatically add.</p></div>
+            <div><b>Load Next</b><p>Repeats the Next Chapter action and waits for each chapter to finish before continuing.</p></div>
+            <div><b>Stop</b><p>Cancels the active link lookup, scan, or auto-load chain.</p></div>
+            <div><b>Clear</b><p>Stops the active loading run and removes all displayed pages.</p></div>
+            <div><b>Hide Panel</b><p>Hides the settings menu for clean reading.</p></div>
+            <div><b>Menu tab</b><p>Opens the settings menu. On phones it is touch-safe and the menu can scroll.</p></div>
+
+            <div><b>Page badge</b><p>Shows the page code and which source supplied it (S1 or S2).</p></div>
+            <div><b>Click a page</b><p>Opens the lightbox. Use Prev/Next, Fit, +/−, Open original, or Download.</p></div>
+            <div><b>Reading HUD</b><p>Shows the current chapter, loaded page count and your page position.</p></div>
+            <div><b>Failed page card</b><p>Tries the backup source automatically. If every source fails, use Retry.</p></div>
+
+            <div><b>← Arrow key</b><p>Previous chapter.</p></div>
+            <div><b>→ Arrow key</b><p>Next chapter.</p></div>
+            <div><b>P key</b><p>Show or hide the menu.</p></div>
+            <div><b>R key</b><p>Reload the current chapter from scratch.</p></div>
+            <div><b>Esc</b><p>Hide the menu or close the guide/lightbox.</p></div>
+            <div><b>?</b><p>Open this guide.</p></div>
+          </div>
+        </section>
+        <section class="help-section">
+          <h3>About link lookup</h3>
+          <p>WeebCentral blocks direct browser requests, so link and title lookup is read through <b>r.jina.ai</b>. Only the page you request is sent; your saved settings stay in this browser. If lookup is slow or unavailable, paste a chapter link again or use the manual source pattern.</p>
+        </section>
+      </div>
+
+      <div class="help-footer">
+        <button id="helpGotItBtn" class="primary" type="button">Got it</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const STORAGE_KEY = "appsScriptMangaReader";
+  const SETTINGS_VERSION = 2;
+  const PAGE_CONCURRENCY = 6;
+  const CHAPTER_CONCURRENCY = 4;
+  const PROBE_TIMEOUT_MS = 8000;
+  const WEEB_ORIGIN = "https://weebcentral.com";
+  const WEEB_PROXY = "https://proxy.corsfix.com/?";
+  const LINK_READER = "https://r.jina.ai/";
+  const LINK_TIMEOUT_MS = 20000;
+  const WEEB_TIMEOUT_MS = 12000;
+  const SEARCH_TIMEOUT_MS = 7000;
+  const PROXY_RETRY_DELAYS = [400, 1000, 2200];
+  const LINK_CACHE_LIMIT = 40;
+  const LINK_CACHE_TTL = 10 * 60 * 1000;
+  const SEARCH_CACHE_TTL = 5 * 60 * 1000;
+  const SEARCH_CACHE_LIMIT = 40;
+  const LIVE_SEARCH_DELAY = 140;
+
+  const els = {
+    panel: $("controlPanel"),
+    panelTab: $("panelTab"),
+    panelTabLabel: $("panelTabLabel"),
+    groupSelect: $("groupSelect"),
+    groupName: $("groupName"),
+    linkInput: $("linkInput"),
+    linkBtn: $("linkBtn"),
+    linkResults: $("linkResults"),
+    chapterPicker: $("chapterPicker"),
+    chapterPickerLabel: $("chapterPickerLabel"),
+    chapterPickerCount: $("chapterPickerCount"),
+    chapterFilter: $("chapterFilter"),
+    chapterSelect: $("chapterSelect"),
+    chapterListBtn: $("chapterListBtn"),
+    advancedSettings: $("advancedSettings"),
+    base1: $("base1"),
+    base2: $("base2"),
+    chapterBox: $("chapterBox"),
+    chapterPad: $("chapterPad"),
+    separator: $("separator"),
+    pageBox: $("pageBox"),
+    pagePad: $("pagePad"),
+    suffix: $("suffix"),
+    maxPages: $("maxPages"),
+    missLimit: $("missLimit"),
+    retryCount: $("retryCount"),
+    retryWait: $("retryWait"),
+    latestScanLimit: $("latestScanLimit"),
+    latestMissLimit: $("latestMissLimit"),
+    width: $("width"),
+    previewUrl: $("previewUrl"),
+    copyPreviewBtn: $("copyPreviewBtn"),
+    testBtn: $("testBtn"),
+    loadBtn: $("loadBtn"),
+    latestBtn: $("latestBtn"),
+    prevChapterBtn: $("prevChapterBtn"),
+    nextChapterBtn: $("nextChapterBtn"),
+    autoNextCount: $("autoNextCount"),
+    autoNextBtn: $("autoNextBtn"),
+    stopBtn: $("stopBtn"),
+    clearBtn: $("clearBtn"),
+    hidePanelBtn: $("hidePanelBtn"),
+    bottomChapterNav: $("bottomChapterNav"),
+    bottomPrevChapterBtn: $("bottomPrevChapterBtn"),
+    bottomNextChapterBtn: $("bottomNextChapterBtn"),
+    bottomChapterLabel: $("bottomChapterLabel"),
+    newGroupBtn: $("newGroupBtn"),
+    saveGroupBtn: $("saveGroupBtn"),
+    deleteGroupBtn: $("deleteGroupBtn"),
+    exportBtn: $("exportBtn"),
+    importInput: $("importInput"),
+    status: $("status"),
+    pages: $("pages"),
+    readingHud: $("readingHud"),
+    hudChapter: $("hudChapter"),
+    hudPages: $("hudPages"),
+    hudPosition: $("hudPosition"),
+    lightbox: $("lightbox"),
+    lightboxImg: $("lightboxImg"),
+    lightboxCaption: $("lightboxCaption"),
+    lightboxStage: $("lightboxStage"),
+    lbPrev: $("lbPrev"),
+    lbNext: $("lbNext"),
+    lbZoomOut: $("lbZoomOut"),
+    lbZoomFit: $("lbZoomFit"),
+    lbZoomIn: $("lbZoomIn"),
+    lbOpen: $("lbOpen"),
+    lbDownload: $("lbDownload"),
+    lbClose: $("lbClose"),
+    helpBtn: $("helpBtn"),
+    helpOverlay: $("helpOverlay"),
+    helpCloseBtn: $("helpCloseBtn"),
+    helpGotItBtn: $("helpGotItBtn"),
+    quickHelpTab: $("quickHelpTab"),
+    advancedHelpTab: $("advancedHelpTab"),
+    quickHelpContent: $("quickHelpContent"),
+    advancedHelpContent: $("advancedHelpContent"),
+    helpTitle: $("helpTitle"),
+    helpSubtitle: $("helpSubtitle")
+  };
+
+  const SETTING_KEYS = [
+    "base1", "base2", "chapterBox", "chapterPad", "separator", "pageBox",
+    "pagePad", "suffix", "maxPages", "missLimit", "retryCount", "retryWait",
+    "latestScanLimit", "latestMissLimit", "width", "link"
+  ];
+
+  const NUMBER_LIMITS = {
+    chapterPad: [0, 8],
+    pagePad: [0, 8],
+    maxPages: [1, 300],
+    missLimit: [1, 30],
+    retryCount: [0, 20],
+    retryWait: [0, 10000],
+    latestScanLimit: [1, 2000],
+    latestMissLimit: [1, 50]
+  };
+
+  const WIDTHS = new Set(["720", "920", "1100", "1400"]);
+
+  const DEFAULT_GROUPS = {
+    "Example (One Piece)": {
+      base1: "https://hot.planeptune.us/manga/One-Piece/",
+      base2: "https://scans-hot.planeptune.us/manga/One-Piece/",
+      chapterBox: "0001",
+      chapterPad: "4",
+      separator: "-",
+      pageBox: "001",
+      pagePad: "3",
+      suffix: ".png",
+      maxPages: "60",
+      missLimit: "5",
+      retryCount: "3",
+      retryWait: "800",
+      latestScanLimit: "300",
+      latestMissLimit: "10",
+      width: "920",
+      link: ""
+    }
+  };
+
+  const BLANK_GROUP = {
+    base1: "",
+    base2: "",
+    chapterBox: "1",
+    chapterPad: "4",
+    separator: "-",
+    pageBox: "1",
+    pagePad: "3",
+    suffix: ".png",
+    maxPages: "60",
+    missLimit: "5",
+    retryCount: "3",
+    retryWait: "800",
+    latestScanLimit: "300",
+    latestMissLimit: "10",
+    width: "920",
+    link: ""
+  };
+
+  const state = {
+    activeGroup: "",
+    runId: 0,
+    busy: false,
+    saveTimer: null,
+    closeTimer: null,
+    helpMode: "quick",
+    lightboxIndex: -1,
+    zoom: 0,
+    hudFrame: 0,
+    lastFocus: null,
+    link: null,
+    linkAbort: null,
+    searchAbort: null,
+    searchTimer: null,
+    searchSeq: 0,
+    searchBusy: false,
+    searchActiveQuery: "",
+    searchAltAbortA: null,
+    searchAltAbortB: null,
+    listAbort: null,
+    fullListBusy: "",
+    fullListPending: null
+  };
+
+  const probeImages = new Set();
+  const linkCache = new Map();
+  const searchCache = new Map();
+  let proxyCooldownUntil = 0;
+  let store = createDefaultStore();
+
+  function clone(value) {
+    try {
+      return structuredClone(value);
+    } catch {
+      return JSON.parse(JSON.stringify(value));
+    }
+  }
+
+  function clampNumber(value, min, max, fallback) {
+    const n = parseInt(value, 10);
+    if (!Number.isFinite(n)) return String(fallback);
+    return String(Math.min(max, Math.max(min, n)));
+  }
+
+  function cleanText(value, maxLength = 2000) {
+    return String(value ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").slice(0, maxLength);
+  }
+
+  function sanitizeGroup(raw) {
+    const group = {};
+
+    for (const key of SETTING_KEYS) {
+      const limits = NUMBER_LIMITS[key];
+      if (limits) {
+        const fallback = parseInt(BLANK_GROUP[key], 10);
+        group[key] = clampNumber(raw?.[key], limits[0], limits[1], fallback);
+      } else {
+        group[key] = cleanText(raw?.[key] ?? BLANK_GROUP[key]);
+      }
+    }
+
+    if (!WIDTHS.has(group.width)) group.width = "920";
+    if (parseInt(group.maxPages, 10) < 60) group.maxPages = "60";
+    group.chapterBox = group.chapterBox.trim() || "1";
+    group.pageBox = group.pageBox.trim() || "1";
+    group.base1 = group.base1.trim();
+    group.base2 = group.base2.trim();
+    group.suffix = group.suffix.trim();
+    group.link = group.link.trim();
+
+    return group;
+  }
+
+  function normalizeData(raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const rawGroups = raw.groups;
+    if (!rawGroups || typeof rawGroups !== "object" || Array.isArray(rawGroups)) return null;
+
+    const groups = {};
+    for (const [name, group] of Object.entries(rawGroups)) {
+      const cleanName = cleanText(name, 80).trim();
+      if (!cleanName || !group || typeof group !== "object" || Array.isArray(group)) continue;
+      groups[cleanName] = sanitizeGroup(group);
+    }
+
+    const names = Object.keys(groups);
+    if (!names.length) return null;
+
+    let selectedGroup = cleanText(raw.selectedGroup, 80).trim();
+    if (!groups[selectedGroup]) selectedGroup = names[0];
+
+    return { groups, selectedGroup };
+  }
+
+  function createDefaultStore() {
+    const groups = clone(DEFAULT_GROUPS);
+    return { groups, selectedGroup: Object.keys(groups)[0] };
+  }
+
+  function loadLocalStore() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      return normalizeData(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  }
+
+  function saveLocal(data) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        groups: data.groups,
+        selectedGroup: data.selectedGroup
+      }));
+    } catch {
+      setStatus("Could not save settings in this browser.", "status-bad", 4000);
+    }
+  }
+
+  function saveServer(data) {
+    try {
+      if (window.google && google.script && google.script.run) {
+        google.script.run.saveSettings({
+          groups: data.groups,
+          selectedGroup: data.selectedGroup
+        });
+      }
+    } catch {
+      /* Optional Apps Script sync is unavailable; local storage remains authoritative. */
+    }
+  }
+
+  function persistStore(useServer = true) {
+    saveLocal(store);
+    if (useServer) saveServer(store);
+  }
+
+  function renderGroupOptions(selected = state.activeGroup) {
+    const names = Object.keys(store.groups);
+    els.groupSelect.replaceChildren();
+
+    for (const name of names) {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      els.groupSelect.appendChild(option);
+    }
+
+    if (store.groups[selected]) els.groupSelect.value = selected;
+    else if (names.length) els.groupSelect.value = names[0];
+  }
+
+  function currentGroupData() {
+    const data = {};
+    for (const key of SETTING_KEYS) {
+      const el = key === "link" ? els.linkInput : els[key];
+      if (el) data[key] = cleanText(el.value);
+    }
+    return data;
+  }
+
+  function applyGroupData(data) {
+    state.link = null;
+    state.linkAbort?.abort();
+    state.linkAbort = null;
+    state.runId += 1;
+    state.cancelAutoNext = true;
+    setBusy(false);
+    els.linkBtn.disabled = false;
+    abortSearchFetches();
+    clearTimeout(state.searchTimer);
+    state.searchTimer = null;
+    state.searchSeq += 1;
+    state.searchBusy = false;
+    state.searchActiveQuery = "";
+    state.listAbort?.abort();
+    state.listAbort = null;
+    state.fullListBusy = "";
+    state.fullListPending = null;
+    els.linkResults.hidden = true;
+    els.linkResults.replaceChildren();
+    els.chapterFilter.value = "";
+    hideChapterPicker();
+
+    for (const key of SETTING_KEYS) {
+      const el = key === "link" ? els.linkInput : els[key];
+      if (el && data && data[key] !== undefined) {
+        el.value = data[key];
+      }
+    }
+
+    applyReaderWidth();
+    updatePreview();
+  }
+
+  function applyReaderWidth() {
+    const width = WIDTHS.has(els.width.value) ? els.width.value : "920";
+    document.documentElement.style.setProperty("--page-width", `${width}px`);
+  }
+
+  function loadSelectedGroup() {
+    const name = els.groupSelect.value;
+    if (!store.groups[name]) return;
+
+    state.activeGroup = name;
+    store.selectedGroup = name;
+    els.groupName.value = name;
+    applyGroupData(store.groups[name]);
+    persistStore(false);
+  }
+
+  function saveActiveGroup(showMessage = false, allowRename = false) {
+    clearTimeout(state.saveTimer);
+    state.saveTimer = null;
+
+    const currentName = state.activeGroup || els.groupSelect.value;
+    if (!currentName || !store.groups[currentName]) return;
+
+    let targetName = currentName;
+
+    if (allowRename) {
+      const typedName = els.groupName.value.trim().slice(0, 80);
+      if (typedName && typedName !== currentName) {
+        if (store.groups[typedName] && !confirm(`A group named "${typedName}" already exists. Overwrite it?`)) {
+          els.groupName.value = currentName;
+        } else {
+          delete store.groups[currentName];
+          targetName = typedName;
+        }
+      }
+    }
+
+    store.groups[targetName] = currentGroupData();
+    state.activeGroup = targetName;
+    store.selectedGroup = targetName;
+
+    persistStore();
+    renderGroupOptions(targetName);
+
+    if (showMessage) {
+      setStatus(`Saved group: ${targetName}`, "status-ok", 2600);
+    }
+  }
+
+  function scheduleSave() {
+    clearTimeout(state.saveTimer);
+    state.saveTimer = setTimeout(() => {
+      state.saveTimer = null;
+      saveActiveGroup(false, false);
+    }, 450);
+  }
+
+  function flushSave() {
+    if (state.saveTimer) saveActiveGroup(false, false);
+  }
+
+  function newGroup() {
+    const names = Object.keys(store.groups);
+    let name = "New Source Group";
+    let index = 2;
+    while (store.groups[name]) name = `New Source Group ${index++}`;
+
+    store.groups[name] = clone(BLANK_GROUP);
+    state.activeGroup = name;
+    store.selectedGroup = name;
+    persistStore();
+    renderGroupOptions(name);
+    els.groupName.value = name;
+    applyGroupData(store.groups[name]);
+    showPanel();
+    setStatus(`Created group: ${name}. Add a source URL to get started.`, "status-ok", 3200);
+    els.groupName.focus();
+    els.groupName.select();
+  }
+
+  function deleteGroup() {
+    const name = state.activeGroup;
+    if (!name || !store.groups[name]) return;
+    if (!confirm(`Delete group "${name}"? This cannot be undone.`)) return;
+
+    delete store.groups[name];
+
+    if (!Object.keys(store.groups).length) {
+      store = createDefaultStore();
+    }
+
+    const nextName = Object.keys(store.groups)[0];
+    state.activeGroup = nextName;
+    store.selectedGroup = nextName;
+    persistStore();
+    renderGroupOptions(nextName);
+    els.groupName.value = nextName;
+    applyGroupData(store.groups[nextName]);
+    setStatus(`Deleted group: ${name}`, "status-ok", 2600);
+  }
+
+  let statusTimer = null;
+
+  function setStatus(text, type = "", timeout = 0) {
+    clearTimeout(statusTimer);
+    statusTimer = null;
+
+    els.status.textContent = text || "";
+    els.status.className = [text ? "has-status" : "", type].filter(Boolean).join(" ");
+
+    if (text && timeout > 0) {
+      statusTimer = setTimeout(() => {
+        els.status.textContent = "";
+        els.status.className = "";
+        statusTimer = null;
+      }, timeout);
+    }
+  }
+
+  function padNumberString(value, padSize) {
+    const raw = String(value ?? "").trim();
+    const size = Math.max(0, Math.min(8, parseInt(padSize, 10) || 0));
+    if (!/^\d+$/.test(raw) || size === 0) return raw;
+    return String(parseInt(raw, 10)).padStart(size, "0");
+  }
+
+  function incrementTextNumber(value, delta, padSize) {
+    const raw = String(value ?? "").trim();
+    const size = Math.max(0, Math.min(8, parseInt(padSize, 10) || 0));
+    const numeric = parseInt(raw || "0", 10);
+    if (!Number.isFinite(numeric)) return raw;
+
+    const next = Math.max(1, numeric + delta);
+    return size > 0 ? String(next).padStart(size, "0") : String(next);
+  }
+
+  function makeUrl(base, chapterValue, pageValue) {
+    const chapter = padNumberString(chapterValue, els.chapterPad.value);
+    const page = padNumberString(pageValue, els.pagePad.value);
+    return `${base}${chapter}${els.separator.value}${page}${els.suffix.value}`;
+  }
+
+  function currentPreviewUrl() {
+    return makeUrl(
+      els.base1.value.trim(),
+      els.chapterBox.value.trim(),
+      els.pageBox.value.trim()
+    );
+  }
+
+  function getBases() {
+    return [...new Set([els.base1.value.trim(), els.base2.value.trim()].filter(Boolean))];
+  }
+
+  function chapterCode(value = els.chapterBox.value) {
+    return padNumberString(value, els.chapterPad.value);
+  }
+
+  function updatePreview() {
+    els.previewUrl.textContent = currentPreviewUrl();
+    els.bottomChapterLabel.textContent = `Chapter ${chapterCode()}`;
+    els.hudChapter.textContent = `Chapter ${chapterCode()}`;
+  }
+
+  function handleSettingChange() {
+    updatePreview();
+    scheduleSave();
+  }
+
+  /* ---------- WeebCentral link opening & search ---------- */
+
+  function parseWeebLink(raw) {
+    let input = String(raw ?? "").trim().slice(0, 500);
+    if (!input) return null;
+
+    if (/^https?:\/\//i.test(input) || /^(www\.)?weebcentral\.com\//i.test(input)) {
+      input = input.replace(/[)\].,;!?'"]+$/, "");
+    }
+
+    let candidate = input;
+    if (!/^https?:\/\//i.test(candidate)) {
+      if (!/^(www\.)?weebcentral\.com\//i.test(candidate)) return null;
+      candidate = `https://${candidate}`;
+    }
+
+    let url;
+    try {
+      url = new URL(candidate);
+    } catch {
+      return null;
+    }
+
+    if (!/(^|\.)weebcentral\.com$/i.test(url.hostname)) return null;
+
+    const chapter = url.pathname.match(/^\/chapters\/([0-9a-z]{26,28})(?:\/|$)/i);
+    if (chapter) {
+      const id = chapter[1].toUpperCase();
+      return { kind: "chapter", id, url: `${WEEB_ORIGIN}/chapters/${id}` };
+    }
+
+    const series = url.pathname.match(/^\/series\/([0-9a-z]{26,28})(?:\/|$)/i);
+    if (series) {
+      const id = series[1].toUpperCase();
+      return { kind: "series", id, url: `${WEEB_ORIGIN}/series/${id}` };
+    }
+
+    return null;
+  }
+
+  function safeImageUrl(value) {
+    try {
+      const url = new URL(String(value).replace(/&amp;/g, "&"));
+      if (url.protocol !== "https:" && url.protocol !== "http:") return "";
+      return url.href;
+    } catch {
+      return "";
+    }
+  }
+
+  async function fetchCachedText(url, cacheKey, { controllerKey, timeoutMs, label, accept, headers = null }) {
+    const cached = linkCache.get(cacheKey);
+    if (cached) {
+      if (Date.now() - cached.at <= LINK_CACHE_TTL) return cached.text;
+      linkCache.delete(cacheKey);
+    }
+
+    const controller = new AbortController();
+    state[controllerKey]?.abort();
+    state[controllerKey] = controller;
+
+    try {
+      for (let attempt = 0; attempt <= PROXY_RETRY_DELAYS.length; attempt += 1) {
+        if (attempt > 0) await sleep(PROXY_RETRY_DELAYS[attempt - 1]);
+
+        /* If the proxy just rate-limited us, wait for the cooldown before trying again. */
+        const cooldown = proxyCooldownUntil - Date.now();
+        if (cooldown > 0) await sleep(cooldown);
+        if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
+
+        let timedOut = false;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, timeoutMs);
+
+        try {
+          const response = await fetch(url, {
+            method: "GET",
+            signal: controller.signal,
+            cache: "no-store",
+            credentials: "omit",
+            referrerPolicy: "no-referrer",
+            headers: {
+              Accept: label === "WeebCentral proxy" ? "text/html" : "text/plain",
+              ...(headers || {})
+            }
+          });
+
+          if (!response.ok) {
+            const error = new Error(`${label} returned HTTP ${response.status}`);
+            error.retryable = response.status === 429 || response.status >= 500;
+            error.status = response.status;
+            throw error;
+          }
+
+          const text = await response.text();
+          const invalid = accept(text);
+          if (invalid) throw new Error(invalid);
+
+          linkCache.set(cacheKey, { at: Date.now(), text });
+          while (linkCache.size > LINK_CACHE_LIMIT) {
+            linkCache.delete(linkCache.keys().next().value);
+          }
+          return text;
+        } catch (error) {
+          if (timedOut) throw new Error(`${label} request timed out`);
+          if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
+
+          if (error.status === 429) {
+            proxyCooldownUntil = Math.max(proxyCooldownUntil, Date.now() + 1200 * (attempt + 1));
+          }
+
+          if (!error.retryable || attempt >= PROXY_RETRY_DELAYS.length) throw error;
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      throw new Error(`${label} request failed`);
+    } finally {
+      if (state[controllerKey] === controller) state[controllerKey] = null;
+    }
+  }
+
+  /* The CORS proxy needs a real http(s) origin. When this app runs from disk, or is
+     embedded in the launcher as a blob: iframe, fall back to the reader proxy only. */
+  function proxyDisabled() {
+    try {
+      if (location.protocol === "file:") return true;
+      if (location.protocol === "blob:" && /(?:^|[#&])darkstar-noproxy(?:$|[&#])/.test(location.hash)) return true;
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  function readerFetch(targetUrl, controllerKey = "linkAbort", { timeoutMs = LINK_TIMEOUT_MS, links = true } = {}) {
+    return fetchCachedText(`${LINK_READER}${targetUrl}`, `jina:${targetUrl}`, {
+      controllerKey,
+      timeoutMs,
+      label: "reader",
+      /* Links summary keeps chapter ids and page image URLs that the plain markdown omits. */
+      headers: links ? { "X-With-Links-Summary": "true" } : null,
+      accept: (text) => (!text || text.length < 40 ? "reader returned an empty page" : "")
+    });
+  }
+
+  function weebFetch(targetUrl, controllerKey = "linkAbort", { timeoutMs = WEEB_TIMEOUT_MS } = {}) {
+    /* The proxy rejects Origin: file:// with HTTP 400, so skip it when the page is opened from disk. */
+    if (proxyDisabled()) {
+      const error = new Error("WeebCentral proxy is unavailable when this file is opened directly");
+      error.status = 400;
+      return Promise.reject(error);
+    }
+
+    return fetchCachedText(`${WEEB_PROXY}${targetUrl}`, `html:${targetUrl}`, {
+      controllerKey,
+      timeoutMs,
+      label: "WeebCentral proxy",
+      accept: (text) => {
+        if (!text || text.length < 40) return "WeebCentral proxy returned an empty page";
+        if (/"corsfix_error"/i.test(text.slice(0, 400))) return "WeebCentral proxy rejected the request";
+        return "";
+      }
+    });
+  }
+
+  function fetchLinkText(targetUrl) {
+    return readerFetch(targetUrl, "linkAbort");
+  }
+
+  function fetchLinkHtml(targetUrl) {
+    return weebFetch(targetUrl, "linkAbort");
+  }
+
+  function fetchSearchHtml(targetUrl, controllerKey = "searchAbort") {
+    return weebFetch(targetUrl, controllerKey, { timeoutMs: SEARCH_TIMEOUT_MS });
+  }
+
+  function fetchChapterListHtml(targetUrl) {
+    return weebFetch(targetUrl, "listAbort");
+  }
+
+  function fetchSearchText(targetUrl, controllerKey = "searchAbort") {
+    return readerFetch(targetUrl, controllerKey, { timeoutMs: 12000 });
+  }
+
+  function fetchChapterListText(targetUrl) {
+    return readerFetch(targetUrl, "listAbort");
+  }
+
+  function parseChapterMarkdown(markdown) {
+    const titleLine = (markdown.match(/^Title:\s*(.+)$/m) || [])[1] || "";
+    const cleanTitle = titleLine.replace(/\s*\|\s*Weeb Central\s*$/i, "").trim();
+    const parts = cleanTitle.split(/\s+\|\s+/);
+    let chapterLabel = (parts[0] || "").trim();
+    const seriesName = (parts[1] || "").trim();
+
+    const numberMatch = chapterLabel.match(/(\d+(?:\.\d+)?)/);
+    const chapterNumber = numberMatch ? parseFloat(numberMatch[1]) : null;
+    if (!chapterLabel) chapterLabel = "Linked chapter";
+
+    const pages = [];
+    const seen = new Set();
+    const pagePattern = /!\[[^\]]*?\bPage\s+(\d+)\b[^\]]*?\]\((https?:\/\/[^)\s]+)\)/gi;
+    let match;
+
+    while ((match = pagePattern.exec(markdown))) {
+      const url = safeImageUrl(match[2]);
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      pages.push({ page: parseInt(match[1], 10) || pages.length + 1, url });
+    }
+
+    if (!pages.length) {
+      const anyImage = /!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g;
+      while ((match = anyImage.exec(markdown))) {
+        const url = safeImageUrl(match[1]);
+        if (!url || seen.has(url)) continue;
+        if (/weebcentral\.com/i.test(url) || /\/static\//i.test(url) || /\/cover\//i.test(url)) continue;
+        if (!/\.(png|jpe?g|webp|gif|avif)(\?|#|$)/i.test(url)) continue;
+        seen.add(url);
+        pages.push({ page: pages.length + 1, url });
+      }
+    }
+
+    pages.sort((a, b) => a.page - b.page);
+
+    const seriesMatch = markdown.match(/https:\/\/weebcentral\.com\/series\/[0-9a-z]{26,28}/i);
+    const seriesParsed = seriesMatch ? parseWeebLink(seriesMatch[0]) : null;
+
+    return {
+      chapterLabel,
+      seriesName,
+      chapterNumber,
+      pages,
+      seriesUrl: seriesParsed && seriesParsed.kind === "series" ? seriesParsed.url : ""
+    };
+  }
+
+  function parseSeriesMarkdown(markdown) {
+    const titleLine = (markdown.match(/^Title:\s*(.+)$/m) || [])[1] || "";
+    const cleanTitle = titleLine.replace(/\s*\|\s*Weeb Central\s*$/i, "").trim();
+    const heading = (markdown.match(/^#\s+(.+)$/m) || [])[1] || "";
+    const seriesName = cleanTitle || heading.trim();
+
+    const chapters = [];
+    const seen = new Set();
+
+    /* Reader chapter rows keep the label inside a nested image link: [![badge](…) Battle 281 Last Read …](…/chapters/ID) */
+    const linkPattern = /\[((?:[^\[\]]|!\[[^\]]*\]\([^)]*\))+)\]\((https?:\/\/weebcentral\.com\/chapters\/([0-9a-z]{26,28})[^)\s]*)\)/gi;
+    let match;
+
+    while ((match = linkPattern.exec(markdown))) {
+      const id = match[3].toUpperCase();
+      if (seen.has(id)) continue;
+
+      let labelInfo = labelFromText(match[1]);
+      if (!labelInfo) {
+        const before = markdown.slice(Math.max(0, match.index - 420), match.index);
+        labelInfo = findLastChapterLabel(before);
+      }
+
+      const label = labelInfo?.label || "Chapter";
+      const number = labelInfo ? labelInfo.number : null;
+
+      seen.add(id);
+      chapters.push({ id, url: `${WEEB_ORIGIN}/chapters/${id}`, label, number });
+    }
+
+    return { seriesName, chapters };
+  }
+
+  function parseSearchMarkdown(markdown) {
+    const text = String(markdown || "");
+
+    /* The single-result detail panel and “Links/Buttons” footer mention authors and related series. */
+    const cutoff = text.search(/^\s*Links\/Buttons:\s*$/im);
+    const region = cutoff >= 0 ? text.slice(0, cutoff) : text;
+
+    const collect = (source, requireImage) => {
+      const results = [];
+      const seen = new Set();
+
+      for (const line of source.split(/\r?\n/)) {
+        if (requireImage && !line.includes("![")) continue;
+
+        /* Reader results pack the cover and the title into one image link; strip images to read the series link. */
+        const plain = line.replace(/!\[[^\]]*\]\([^)]*\)/g, " ");
+        const linkPattern = /\[([^\]]+)\]\((https?:\/\/weebcentral\.com\/series\/[0-9a-z]{26,28}[^)\s]*)\)/gi;
+        let match;
+
+        while ((match = linkPattern.exec(plain))) {
+          const parsed = parseWeebLink(match[2]);
+          if (!parsed || parsed.kind !== "series" || seen.has(parsed.id)) continue;
+
+          const name = match[1]
+            .replace(/\s+/g, " ")
+            .trim()
+            .replace(/^official\s+/i, "")
+            .trim();
+          if (!name || CHAPTER_NAV_LABELS.test(name)) continue;
+
+          const coverMatch = line.match(/!\[[^\]]*\]\((https?:\/\/temp\.compsci88\.com\/cover\/[^)\s]+)\)/i) ||
+            line.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+\/cover\/[^)\s]+)\)/i);
+
+          seen.add(parsed.id);
+          results.push({
+            id: parsed.id,
+            url: parsed.url,
+            name,
+            cover: safeImageUrl(coverMatch?.[1] || "")
+          });
+        }
+      }
+
+      return results;
+    };
+
+    const withImages = collect(region, true);
+    if (withImages.length) return withImages;
+
+    const plain = collect(region, false);
+    if (plain.length) return plain;
+
+    return collect(text, false);
+  }
+
+  function parseFullChapterList(markdown) {
+    const text = String(markdown || "");
+    const linked = [];
+    const seenIds = new Set();
+
+    /* Reader links-summary lines look like: - [File 1169 Last Read …](…/chapters/ID) */
+    const linkPattern = /\[([^\]]*)\]\(\s*(?:https?:\/\/weebcentral\.com)?\/chapters\/([0-9a-z]{26,28})[^)]*\)/gi;
+    let match;
+
+    while ((match = linkPattern.exec(text))) {
+      const id = match[2].toUpperCase();
+      if (seenIds.has(id)) continue;
+
+      const labelInfo = labelFromText(match[1]);
+      if (!labelInfo) continue;
+
+      seenIds.add(id);
+      linked.push({
+        number: labelInfo.number,
+        label: labelInfo.label,
+        id,
+        url: `${WEEB_ORIGIN}/chapters/${id}`
+      });
+    }
+
+    if (linked.length) return linked;
+
+    /* Older reader responses drop chapter links; keep labels so the numbered pattern still works. */
+    const chapters = [];
+    const seen = new Set();
+
+    for (const line of text.split(/\r?\n/)) {
+      const labelInfo = parseChapterLabel(line);
+      if (!labelInfo) continue;
+
+      const key = `label:${labelInfo.label}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      chapters.push({
+        number: labelInfo.number,
+        label: labelInfo.label,
+        id: "",
+        url: ""
+      });
+    }
+
+    return chapters;
+  }
+
+  function cleanSeriesTitle(value) {
+    return String(value || "").replace(/\s*\|\s*Weeb Central\s*$/i, "").trim();
+  }
+
+  function cleanChapterText(text) {
+    return String(text || "")
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/\bImage\s+\d+\b/gi, " ")
+      .replace(/https?:\/\/\S+/gi, " ")
+      .replace(/\s+/g, " ")
+      .replace(/\bLast Read\b.*$/i, "")
+      .replace(/\b\d{4}-\d{2}-\d{2}T[\d:.]+Z?\b/g, " ")
+      .replace(/^[\s>*\-–—|]+/, "")
+      .replace(/[\s|]+$/, "")
+      .trim();
+  }
+
+  function parseChapterLabel(text) {
+    let cleaned = cleanChapterText(text);
+
+    if (!cleaned) return null;
+
+    /* Labels vary by series: Chapter 12, File 1169, Mag Version 243, Punch 1, Prologue 16… */
+    const known = cleaned.match(/(?:^|\b)(chapter|ch\.?|file|episode|ep\.?|prologue|punch|mag\s+version|official\s+scans|volume|vol\.?|part|extra|special|omake|side\s+story)\s*#?\s*(\d+(?:\.\d+)?)/i);
+    const trailing = known ? null : cleaned.match(/([A-Za-z][A-Za-z .'-]*?)\s*#?\s*(\d+(?:\.\d+)?)\s*$/);
+    const bare = known || trailing ? null : cleaned.match(/^#?\s*(\d+(?:\.\d+)?)\s*$/);
+    const match = known || trailing || bare;
+    if (!match) return null;
+
+    const number = parseFloat(match[2] || match[1]);
+    if (!Number.isFinite(number)) return null;
+
+    if (bare) cleaned = `Chapter ${bare[1]}`;
+    if (cleaned.length > 90) cleaned = cleaned.slice(0, 90).trim();
+
+    return { label: cleaned || `Chapter ${number}`, number };
+  }
+
+  function findLastChapterLabel(text) {
+    const pattern = /(?:^|\b)(chapter|ch\.?|file|episode|ep\.?|prologue|punch|mag\s+version|official\s+scans|volume|vol\.?|part|extra|special|omake|side\s+story)\s*#?\s*(\d+(?:\.\d+)?)/gi;
+    let last = null;
+    let match;
+
+    while ((match = pattern.exec(String(text || "")))) last = match;
+    if (!last) return null;
+
+    const number = parseFloat(last[2]);
+    if (!Number.isFinite(number)) return null;
+
+    return {
+      label: last[0].replace(/\s+/g, " ").trim(),
+      number
+    };
+  }
+
+  const CHAPTER_NAV_LABELS = /^(read|reading|chapter list|random|follow|bookmark|share|next|previous|prev|back|top|home|search|login|register|forgot password|close)$/i;
+
+  function labelFromText(text) {
+    const info = parseChapterLabel(text);
+    if (info) return info;
+
+    /* Some series have one-shots or bonus chapters without any number (e.g. “Oneshot”, “Special”). */
+    const direct = cleanChapterText(text);
+    if (direct && direct.length <= 90 && !CHAPTER_NAV_LABELS.test(direct)) {
+      return { label: direct, number: null };
+    }
+
+    return null;
+  }
+
+  function chapterLabelFromElement(anchor) {
+    let info = labelFromText(anchor.textContent || "");
+    if (info) return info;
+
+    const container = anchor.closest("li, tr, article") || anchor.parentElement;
+    if (container) info = labelFromText(container.textContent || "");
+
+    return info;
+  }
+
+  function parseChapterAnchors(doc) {
+    const chapters = [];
+    const seen = new Set();
+
+    for (const anchor of doc.querySelectorAll('a[href*="/chapters/"]')) {
+      const href = anchor.getAttribute("href") || "";
+      const idMatch = href.match(/\/chapters\/([0-9a-z]{26,28})/i);
+      if (!idMatch) continue;
+
+      const id = idMatch[1].toUpperCase();
+      if (seen.has(id)) continue;
+
+      const labelInfo = chapterLabelFromElement(anchor);
+      if (!labelInfo) continue;
+
+      seen.add(id);
+      chapters.push({
+        id,
+        url: `${WEEB_ORIGIN}/chapters/${id}`,
+        label: labelInfo.label,
+        number: labelInfo.number
+      });
+    }
+
+    return chapters;
+  }
+
+  function parseSearchHtml(html) {
+    const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+    const results = [];
+    const seen = new Set();
+
+    for (const card of doc.querySelectorAll("article.bg-base-300")) {
+      const anchor = card.querySelector('a[href*="/series/"]');
+      if (!anchor) continue;
+
+      const parsed = parseWeebLink(anchor.getAttribute("href") || "");
+      if (!parsed || parsed.kind !== "series" || seen.has(parsed.id)) continue;
+      seen.add(parsed.id);
+
+      const image = card.querySelector("img");
+      const cover = safeImageUrl(image?.getAttribute("src") || image?.getAttribute("data-src") || "");
+      const name = (anchor.textContent || "").replace(/\s+/g, " ").trim().replace(/^Official\s+/i, "").trim();
+
+      results.push({ id: parsed.id, url: parsed.url, name: name || "Untitled", cover });
+    }
+
+    return results;
+  }
+
+  function normalizeSearchText(value) {
+    return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  }
+
+  function isOrderedSubsequence(needle, haystack) {
+    if (!needle) return false;
+    let index = 0;
+    for (const char of haystack) {
+      if (char === needle[index]) index += 1;
+      if (index >= needle.length) return true;
+    }
+    return false;
+  }
+
+  function rankSearchResults(results, query) {
+    const normalized = normalizeSearchText(query);
+    if (!normalized || results.length < 2) return results;
+
+    const compactQuery = normalized.replace(/\s+/g, "");
+    const tokens = normalized.split(" ").filter(Boolean);
+    const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const wordStart = new RegExp(`(^| )${escaped}`);
+
+    const scored = results.map((result, index) => {
+      const title = normalizeSearchText(result.name);
+      const compactTitle = title.replace(/\s+/g, "");
+      let score;
+
+      if (title === normalized) score = 1200;
+      else if (title.startsWith(normalized)) score = 1000;
+      else if (wordStart.test(title)) score = 850;
+      else if (title.includes(normalized)) score = 700;
+      else {
+        const hits = tokens.filter((token) => title.includes(token)).length;
+        if (hits) score = 400 + (hits / tokens.length) * 200;
+        else if (isOrderedSubsequence(compactQuery, compactTitle)) score = 200;
+        else score = -1;
+      }
+
+      /* Prefer the shorter, tighter title when relevance is otherwise equal. */
+      if (score >= 0) score -= Math.min(20, title.length * 0.05);
+      return { result, index, score };
+    });
+
+    const matched = scored.filter((entry) => entry.score >= 0);
+    const unmatched = scored.filter((entry) => entry.score < 0);
+
+    matched.sort((a, b) => b.score - a.score || a.index - b.index);
+    return [...matched, ...unmatched].map((entry) => entry.result);
+  }
+
+  function parseSeriesHtml(html) {
+    const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+    const title = doc.querySelector('meta[property="og:title"]')?.getAttribute("content") || doc.title || "";
+    const heading = doc.querySelector("h1")?.textContent || "";
+    return {
+      seriesName: cleanSeriesTitle(title) || cleanSeriesTitle(heading),
+      chapters: parseChapterAnchors(doc)
+    };
+  }
+
+  function parseChapterInfoHtml(html) {
+    const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+    const title = doc.querySelector('meta[property="og:title"]')?.getAttribute("content") || doc.title || "";
+    const parts = cleanSeriesTitle(title).split(/\s+\|\s+/);
+    let chapterLabel = (parts[0] || "").trim();
+    const seriesName = (parts[1] || "").trim();
+
+    const numberMatch = chapterLabel.match(/(\d+(?:\.\d+)?)/);
+    const chapterNumber = numberMatch ? parseFloat(numberMatch[1]) : null;
+    if (!chapterLabel) chapterLabel = "Linked chapter";
+
+    let seriesUrl = "";
+    for (const anchor of doc.querySelectorAll('a[href*="/series/"]')) {
+      const parsed = parseWeebLink(anchor.getAttribute("href") || "");
+      if (parsed && parsed.kind === "series") {
+        seriesUrl = parsed.url;
+        break;
+      }
+    }
+
+    const canonical = doc.querySelector('link[rel="canonical"]')?.getAttribute("href") ||
+      doc.querySelector('meta[property="og:url"]')?.getAttribute("content") || "";
+    const canonicalLink = parseWeebLink(canonical);
+
+    return {
+      chapterLabel,
+      seriesName,
+      chapterNumber,
+      seriesUrl,
+      chapterUrl: canonicalLink?.kind === "chapter" ? canonicalLink.url : ""
+    };
+  }
+
+  function parseChapterFirstImageHtml(html) {
+    const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+    const og = safeImageUrl(doc.querySelector('meta[property="og:image"]')?.getAttribute("content") || "");
+    if (og && /\/manga\//i.test(og) && !/\/cover\//i.test(og)) return og;
+
+    const match = String(html || "").match(/https?:\/\/[^"'\s<>]+\/manga\/[^"'\s<>]+\.(?:png|jpe?g|webp|gif|avif)/i);
+    return match ? safeImageUrl(match[0]) : "";
+  }
+
+  function parseChapterImagesHtml(html) {
+    const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+    const scoped = doc.querySelector("#chapter-images");
+    const container = scoped || doc.body || doc;
+    const pages = [];
+    const seen = new Set();
+
+    for (const image of container.querySelectorAll("img, source")) {
+      const srcset = image.getAttribute("data-srcset") || image.getAttribute("srcset") || "";
+      const raw = image.getAttribute("src") ||
+        image.getAttribute("data-src") ||
+        image.getAttribute("data-lazy-src") ||
+        srcset.split(",")[0]?.trim().split(/\s+/)[0] ||
+        "";
+      const url = safeImageUrl(raw);
+      if (!url || seen.has(url)) continue;
+
+      /* Inside the page container every image is a page; only clean up site chrome on body-wide fallbacks. */
+      if (!scoped) {
+        if (!/\.(png|jpe?g|webp|gif|avif)(\?|#|$)/i.test(url)) continue;
+        if (/weebcentral\.com/i.test(url) || /\/static\//i.test(url) || /\/cover\//i.test(url)) continue;
+      }
+
+      seen.add(url);
+      pages.push({ page: pages.length + 1, url });
+    }
+
+    return pages;
+  }
+
+  function parseFullChapterListHtml(html) {
+    const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+    return parseChapterAnchors(doc);
+  }
+
+  function findChapterIndex(chapters, id, number) {
+    if (!Array.isArray(chapters) || !chapters.length) return -1;
+
+    if (id) {
+      const byId = chapters.findIndex((item) => item.id === id);
+      if (byId >= 0) return byId;
+    }
+
+    if (Number.isFinite(Number(number))) {
+      const target = Number(number);
+      const byNumber = chapters.findIndex((item) => item.number === target);
+      if (byNumber >= 0) return byNumber;
+    }
+
+    return 0;
+  }
+
+  function deriveLinkPattern(pageUrls, firstPage, chapterNumber) {
+    let base = "";
+    let chapterPad = Math.max(0, Math.min(8, parseInt(els.chapterPad.value, 10) || 0));
+    let pagePad = Math.max(0, Math.min(8, parseInt(els.pagePad.value, 10) || 0));
+    let separator = els.separator.value || "-";
+    let suffix = els.suffix.value || ".png";
+    let chapterBox = els.chapterBox.value.trim() || "1";
+    let pageBox = padNumberString(String(firstPage || 1), pagePad);
+    let patternOk = false;
+
+    try {
+      const url = new URL(pageUrls[0]);
+      const path = url.pathname;
+      const file = path.split("/").pop() || "";
+      const dot = file.lastIndexOf(".");
+      const ext = dot > 0 ? file.slice(dot) : "";
+      const stem = dot > 0 ? file.slice(0, dot) : file;
+
+      base = `${url.origin}${path.slice(0, path.length - file.length)}`;
+      if (ext) suffix = ext;
+
+      const filePattern = stem.match(/^(\d+)(\D+)(\d+)$/);
+      if (filePattern) {
+        const chapterToken = filePattern[1];
+        const separatorToken = filePattern[2];
+        const pageToken = filePattern[3];
+        const chapterFromFile = parseInt(chapterToken, 10);
+
+        if (!Number.isFinite(chapterNumber) || Math.trunc(chapterNumber) === chapterFromFile) {
+          chapterPad = chapterToken.length;
+          pagePad = pageToken.length;
+          separator = separatorToken;
+          chapterBox = padNumberString(String(chapterFromFile), chapterPad);
+          pageBox = padNumberString(String(firstPage || 1), pagePad);
+          patternOk = true;
+        }
+      }
+    } catch {
+      /* Keep the existing pattern if the page URL is unusual. */
+    }
+
+    if (Number.isFinite(chapterNumber)) {
+      chapterBox = padNumberString(String(chapterNumber), chapterPad);
+    }
+
+    return { base, chapterPad, pagePad, separator, suffix, chapterBox, pageBox, patternOk };
+  }
+
+  /* Build a numbered pattern from a single known page image, even when its chapter token differs from the label number. */
+  function patternFromImageUrl(imageUrl, chapterNumber, firstPage = 1) {
+    const pattern = deriveLinkPattern([imageUrl], firstPage, chapterNumber);
+
+    try {
+      const url = new URL(imageUrl);
+      const file = (url.pathname.split("/").pop() || "");
+      const dot = file.lastIndexOf(".");
+      const stem = dot > 0 ? file.slice(0, dot) : file;
+      const filePattern = stem.match(/^(\d+)(\D+)(\d+)$/);
+
+      if (filePattern) {
+        const chapterToken = filePattern[1];
+        const pageToken = filePattern[3];
+        pattern.chapterPad = chapterToken.length;
+        pattern.pagePad = pageToken.length;
+        pattern.separator = filePattern[2];
+        pattern.chapterBox = padNumberString(String(parseInt(chapterToken, 10)), chapterToken.length);
+        pattern.pageBox = padNumberString(String(firstPage || 1), pageToken.length);
+        pattern.patternOk = true;
+      }
+    } catch {
+      /* Keep whatever deriveLinkPattern produced. */
+    }
+
+    return pattern;
+  }
+
+  function alternateScanBase(base) {
+    if (!base) return "";
+
+    try {
+      const url = new URL(base);
+      const host = url.hostname;
+      let altHost = "";
+
+      /* Only mirror the host pattern we know exists; guessing extra hosts causes noisy failed requests. */
+      if (host.startsWith("scans-hot.")) altHost = host.slice(6);
+      else if (host.startsWith("hot.")) altHost = `scans-${host}`;
+
+      if (!altHost || altHost === host) return "";
+      return `${url.protocol}//${altHost}${url.pathname}`;
+    } catch {
+      return "";
+    }
+  }
+
+  function applyLinkMeta(meta) {
+    const pattern = meta.pattern;
+
+    if (pattern.base) els.base1.value = pattern.base;
+    els.base2.value = alternateScanBase(pattern.base);
+    els.chapterPad.value = String(pattern.chapterPad);
+    els.separator.value = pattern.separator;
+    els.pagePad.value = String(pattern.pagePad);
+    els.suffix.value = pattern.suffix;
+    els.chapterBox.value = pattern.chapterBox;
+    els.pageBox.value = pattern.pageBox;
+
+    const neededPages = Math.min(300, Math.max(1, meta.pages.length));
+    const currentMax = parseInt(els.maxPages.value, 10) || 0;
+    if (currentMax < neededPages) els.maxPages.value = String(neededPages);
+
+    els.linkInput.value = meta.chapterUrl;
+
+    updatePreview();
+    scheduleSave();
+  }
+
+  function renderExactPages(meta, clearExisting) {
+    const pad = els.pagePad.value;
+    const chapterValue = els.chapterBox.value || "1";
+
+    if (clearExisting) els.pages.replaceChildren();
+    else els.pages.querySelector(".empty")?.remove();
+
+    meta.pages.forEach((page, index) => {
+      addPage(
+        { url: page.url, sourceIndex: 1 },
+        {
+          chapter: chapterValue,
+          pageCode: padNumberString(String(page.page || index + 1), pad),
+          exact: true
+        }
+      );
+    });
+
+    updateHud();
+  }
+
+  function hideLinkResults() {
+    els.linkResults.hidden = true;
+    els.linkResults.removeAttribute("aria-busy");
+    els.linkResults.replaceChildren();
+  }
+
+  function renderLinkResults(results, query, error = null) {
+    els.linkResults.replaceChildren();
+
+    if (!results.length) {
+      const box = document.createElement("div");
+      box.className = "link-empty";
+      box.textContent = error
+        ? "Search is unavailable right now. "
+        : `No series found for “${query}”. `;
+
+      const link = document.createElement("a");
+      link.href = `${WEEB_ORIGIN}/search?text=${encodeURIComponent(query)}`;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "Open WeebCentral search";
+      box.append(link);
+
+      els.linkResults.append(box);
+      els.linkResults.hidden = false;
+      return;
+    }
+
+    for (const result of results) {
+      const isBest = results.length > 1 && result === results[0];
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = isBest ? "link-result is-best" : "link-result";
+
+      if (result.cover) {
+        const cover = document.createElement("img");
+        cover.src = result.cover;
+        cover.alt = "";
+        cover.loading = "lazy";
+        cover.referrerPolicy = "no-referrer";
+        button.append(cover);
+      }
+
+      const text = document.createElement("span");
+      text.className = "link-result-text";
+
+      const name = document.createElement("b");
+      name.textContent = result.name;
+
+      const sub = document.createElement("span");
+      sub.textContent = isBest ? "Closest match · WeebCentral series" : "WeebCentral series";
+
+      text.append(name, sub);
+      button.append(text);
+
+      button.addEventListener("click", () => {
+        cancelLiveSearch();
+        state.searchSeq += 1;
+        abortSearchFetches();
+        state.searchBusy = false;
+        state.searchActiveQuery = "";
+        els.linkInput.value = result.url;
+        hideLinkResults();
+        void openSeriesFromLink({ kind: "series", id: result.id, url: result.url });
+      });
+
+      els.linkResults.append(button);
+    }
+
+    els.linkResults.hidden = false;
+  }
+
+  function hideChapterPicker() {
+    els.chapterPicker.hidden = true;
+    els.chapterSelect.replaceChildren();
+    els.chapterPickerCount.textContent = "";
+  }
+
+  function filterChapterOptions() {
+    const link = state.link;
+    const chapters = Array.isArray(link?.chapters) ? link.chapters : [];
+    const query = els.chapterFilter.value.trim().toLowerCase();
+
+    els.chapterSelect.replaceChildren();
+
+    let shown = 0;
+    chapters.forEach((item, index) => {
+      const label = item.label || `Chapter ${item.number}`;
+      if (query && !label.toLowerCase().includes(query) && !String(item.number ?? "").includes(query)) return;
+
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = label;
+      els.chapterSelect.append(option);
+      shown += 1;
+    });
+
+    if (!shown) {
+      const option = document.createElement("option");
+      option.textContent = query ? "No matching chapters" : "No chapters";
+      option.disabled = true;
+      els.chapterSelect.append(option);
+    }
+
+    if (Number.isInteger(link?.chapterIndex) && link.chapterIndex >= 0) {
+      const value = String(link.chapterIndex);
+      if ([...els.chapterSelect.options].some((option) => option.value === value)) {
+        els.chapterSelect.value = value;
+      }
+    }
+
+    const total = chapters.length;
+    const loading = state.fullListBusy && state.fullListBusy === link?.seriesUrl;
+    const suffix = `${loading ? " · loading…" : ""}`;
+
+    els.chapterPickerCount.textContent = query
+      ? `${shown} of ${total}${suffix}`
+      : `${total}${link?.fullList ? "" : " (partial)"}${suffix}`;
+  }
+
+  function renderChapterPicker() {
+    const chapters = Array.isArray(state.link?.chapters) ? state.link.chapters : [];
+
+    if (!chapters.length) {
+      hideChapterPicker();
+      return;
+    }
+
+    els.chapterPicker.hidden = false;
+    els.chapterPickerLabel.textContent = state.link.seriesName || "Chapters";
+    filterChapterOptions();
+  }
+
+  function startChapterListLoad(seriesUrl) {
+    if (!seriesUrl) return Promise.resolve(false);
+    if (state.link?.seriesUrl === seriesUrl && state.link?.fullList) {
+      renderChapterPicker();
+      return Promise.resolve(true);
+    }
+
+    const alreadyPending = state.fullListPending?.seriesUrl === seriesUrl;
+    const promise = ensureFullChapterList(seriesUrl);
+    if (alreadyPending) return promise;
+
+    return promise.then((updated) => {
+      if (!updated && state.link?.seriesUrl === seriesUrl && !state.link?.fullList) {
+        renderChapterPicker();
+        setStatus(
+          "Showing the chapters from the series page. Use Refresh to load them all.",
+          "status-warn",
+          6000
+        );
+      }
+      return updated;
+    });
+  }
+
+  async function waitForFullChapterList(seriesUrl) {
+    if (!seriesUrl || state.link?.seriesUrl !== seriesUrl) return false;
+    if (state.link?.fullList) return true;
+
+    const pending = state.fullListPending?.seriesUrl === seriesUrl
+      ? state.fullListPending.promise
+      : ensureFullChapterList(seriesUrl);
+
+    return Boolean(await pending.catch(() => false));
+  }
+
+  function ensureFullChapterList(seriesUrl, { force = false, deferPicker = false } = {}) {
+    if (!seriesUrl) return Promise.resolve(false);
+    if (!force && state.link?.seriesUrl === seriesUrl && state.link?.fullList) return Promise.resolve(true);
+
+    if (state.fullListPending?.seriesUrl === seriesUrl) {
+      if (!force) return state.fullListPending.promise;
+
+      /* Refresh: drop the in-flight copy, then fetch a fresh one. */
+      state.listAbort?.abort();
+      state.listAbort = null;
+      return state.fullListPending.promise
+        .catch(() => false)
+        .then(() => ensureFullChapterList(seriesUrl, { force: true, deferPicker }));
+    }
+
+    const promise = (async () => {
+      state.fullListBusy = seriesUrl;
+      if (!deferPicker) filterChapterOptions();
+
+      let updated = false;
+
+      try {
+        const target = `${seriesUrl}/full-chapter-list`;
+        if (force) {
+          linkCache.delete(`html:${target}`);
+          linkCache.delete(`jina:${target}`);
+        }
+
+        let parsed = [];
+        try {
+          const html = await fetchChapterListHtml(target);
+          if (state.link?.seriesUrl !== seriesUrl) return false;
+          parsed = parseFullChapterListHtml(html);
+        } catch (error) {
+          if (error?.name === "AbortError") throw error;
+          const markdown = await fetchChapterListText(target);
+          if (state.link?.seriesUrl !== seriesUrl) return false;
+          parsed = parseFullChapterList(markdown);
+        }
+
+        if (!parsed.length) return false;
+
+        const link = state.link;
+        if (!link || link.seriesUrl !== seriesUrl) return false;
+
+        const knownByNumber = new Map();
+        for (const item of link.chapters || []) {
+          if (Number.isFinite(Number(item.number))) knownByNumber.set(Number(item.number), item);
+        }
+
+        const currentId = link.chapterUrl ? parseWeebLink(link.chapterUrl)?.id || "" : "";
+
+        for (const item of parsed) {
+          const known = knownByNumber.get(item.number);
+          if (!known) continue;
+          if (!item.id && known.id) {
+            item.id = known.id;
+            item.url = known.url || "";
+          } else if (!item.url && known.url) {
+            item.url = known.url;
+          }
+        }
+
+        if (currentId && Number.isFinite(Number(link.chapterNumber))) {
+          const current = parsed.find((item) => item.number === Number(link.chapterNumber));
+          if (current && !current.id) {
+            current.id = currentId;
+            current.url = link.chapterUrl;
+          }
+        }
+
+        link.chapters = parsed;
+        link.fullList = true;
+        const matchedIndex = findChapterIndex(parsed, currentId, link.chapterNumber);
+        link.chapterIndex = matchedIndex >= 0 ? matchedIndex : 0;
+        if (matchedIndex >= 0) {
+          const current = parsed[matchedIndex];
+          link.chapterUrl = current.url || link.chapterUrl;
+          link.chapterLabel = current.label || link.chapterLabel;
+          link.chapterNumber = current.number ?? link.chapterNumber;
+        }
+        updated = true;
+
+        if (!deferPicker) renderChapterPicker();
+      } catch {
+        /* Keep the partial chapter list; the Refresh button can try again. */
+      } finally {
+        if (state.fullListBusy === seriesUrl) state.fullListBusy = "";
+        if (!deferPicker && state.link?.seriesUrl === seriesUrl) filterChapterOptions();
+      }
+
+      return updated;
+    })().finally(() => {
+      if (state.fullListPending?.promise === promise) state.fullListPending = null;
+    });
+
+    state.fullListPending = { seriesUrl, promise };
+    return promise;
+  }
+
+  async function openChapterItem(item, index, { append = false } = {}) {
+    const link = state.link;
+    if (!link || !item) return { cancelled: false, found: 0, chapter: els.chapterBox.value };
+
+    els.chapterFilter.value = "";
+
+    if (item.url) {
+      return openChapterFromLink(
+        { url: item.url, id: item.id || "", label: item.label || "", number: item.number },
+        {
+          series: { url: link.seriesUrl, name: link.seriesName, chapters: link.chapters },
+          index,
+          append
+        }
+      );
+    }
+
+    state.cancelAutoNext = false;
+    state.link = {
+      ...link,
+      chapterIndex: index,
+      chapterUrl: "",
+      chapterLabel: item.label || "",
+      chapterNumber: item.number
+    };
+
+    els.chapterBox.value = padNumberString(String(item.number ?? ""), els.chapterPad.value);
+    els.pageBox.value = padNumberString(1, els.pagePad.value);
+    handleSettingChange();
+    renderChapterPicker();
+
+    if (window.matchMedia("(pointer: coarse)").matches) hidePanel();
+    return loadPages(!append);
+  }
+
+  async function recoverChapterFromPage(chapter, { series = null, index = -1, append = false, runId } = {}) {
+    if (!chapter?.url) return null;
+
+    let chapterNumber = Number.isFinite(Number(chapter.number)) ? Number(chapter.number) : null;
+    setStatus(`Retrying ${chapter.label || "this chapter"} from its chapter page…`, "status-warn");
+
+    let imageUrl = "";
+    let seriesUrl = series?.url || state.link?.seriesUrl || "";
+    let seriesName = series?.name || state.link?.seriesName || "";
+    let chapterLabel = chapter.label || "";
+
+    try {
+      const html = await fetchLinkHtml(chapter.url);
+      if (runId !== state.runId) return { cancelled: true, found: 0 };
+
+      imageUrl = parseChapterFirstImageHtml(html);
+      const pageInfo = parseChapterInfoHtml(html);
+      if (!Number.isFinite(chapterNumber) && Number.isFinite(pageInfo.chapterNumber)) {
+        chapterNumber = Number(pageInfo.chapterNumber);
+      }
+      seriesUrl = seriesUrl || pageInfo.seriesUrl || "";
+      seriesName = seriesName || pageInfo.seriesName || "";
+      chapterLabel = chapterLabel || pageInfo.chapterLabel || "";
+    } catch (error) {
+      if (error?.name === "AbortError") throw error;
+    }
+
+    /* If the HTML route is unavailable, the reader markdown can still expose the page images. */
+    if (!imageUrl) {
+      try {
+        const markdown = await fetchLinkText(chapter.url);
+        if (runId !== state.runId) return { cancelled: true, found: 0 };
+        const fallback = parseChapterMarkdown(markdown);
+        if (fallback.pages.length) imageUrl = fallback.pages[0].url;
+        if (!Number.isFinite(chapterNumber) && Number.isFinite(fallback.chapterNumber)) {
+          chapterNumber = Number(fallback.chapterNumber);
+        }
+        seriesUrl = seriesUrl || fallback.seriesUrl || "";
+        seriesName = seriesName || fallback.seriesName || "";
+        chapterLabel = chapterLabel || fallback.chapterLabel || "";
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+      }
+    }
+
+    if (!imageUrl) return null;
+
+    const pattern = patternFromImageUrl(imageUrl, chapterNumber, 1);
+    if (!pattern.base) return null;
+
+    const sameSeries = Boolean(seriesUrl) && state.link?.seriesUrl === seriesUrl;
+    const meta = {
+      chapterUrl: chapter.url,
+      chapterLabel: chapterLabel || (Number.isFinite(chapterNumber) ? `Chapter ${chapterNumber}` : "Linked chapter"),
+      chapterNumber,
+      seriesName,
+      seriesUrl,
+      pages: [{ page: 1, url: imageUrl }]
+    };
+    meta.pattern = pattern;
+    applyLinkMeta(meta);
+
+    const chapters = Array.isArray(series?.chapters) && series.chapters.length
+      ? series.chapters
+      : (Array.isArray(state.link?.chapters) ? state.link.chapters : []);
+    const fullList = sameSeries && state.link?.fullList === true;
+    let chapterIndex = Number.isInteger(index) && index >= 0
+      ? index
+      : findChapterIndex(chapters, chapter.id || "", chapterNumber);
+
+    if (chapterIndex < 0 && chapters.length) chapterIndex = 0;
+
+    state.link = {
+      seriesUrl,
+      seriesName: seriesName || "WeebCentral series",
+      chapters,
+      fullList,
+      chapterIndex,
+      chapterUrl: chapter.url,
+      chapterLabel: meta.chapterLabel,
+      chapterNumber
+    };
+
+    renderChapterPicker();
+    if (seriesUrl && !fullList) {
+      hideChapterPicker();
+      startChapterListLoad(seriesUrl);
+    }
+
+    return loadPages(!append);
+  }
+
+  async function openChapterFromLink(chapter, { series = null, index = -1, append = false } = {}) {
+    const runId = beginRun();
+    state.cancelAutoNext = false;
+    els.linkBtn.disabled = true;
+    let resolvedChapter = chapter;
+
+    if (window.matchMedia("(pointer: coarse)").matches) hidePanel();
+    setStatus(`Reading ${chapter.label || "chapter"}…`, "status-warn");
+
+    try {
+      let chapterId = parseWeebLink(chapter.url)?.id || chapter.id || "";
+      let chapterUrl = chapter.url;
+      const providedSeriesUrl = series?.url || "";
+
+      const info = {
+        chapterLabel: chapter.label || "",
+        chapterNumber: Number.isFinite(chapter.number) ? Number(chapter.number) : null,
+        seriesName: series?.name || "",
+        seriesUrl: providedSeriesUrl,
+        pages: []
+      };
+
+      if (!info.chapterLabel || !info.seriesUrl || !info.seriesName || !Number.isFinite(info.chapterNumber)) {
+        let pageInfo = null;
+
+        try {
+          const html = await fetchLinkHtml(chapter.url);
+          if (runId !== state.runId) return { cancelled: true, found: 0 };
+          pageInfo = parseChapterInfoHtml(html);
+        } catch (error) {
+          if (error?.name === "AbortError") throw error;
+          const markdown = await fetchLinkText(chapter.url);
+          if (runId !== state.runId) return { cancelled: true, found: 0 };
+          const fallback = parseChapterMarkdown(markdown);
+          pageInfo = {
+            chapterLabel: fallback.chapterLabel,
+            chapterNumber: fallback.chapterNumber,
+            seriesName: fallback.seriesName,
+            seriesUrl: fallback.seriesUrl,
+            pages: fallback.pages
+          };
+        }
+
+        info.chapterLabel = info.chapterLabel || pageInfo.chapterLabel;
+        info.chapterNumber = Number.isFinite(info.chapterNumber) ? info.chapterNumber : pageInfo.chapterNumber;
+        info.seriesName = info.seriesName || pageInfo.seriesName;
+        info.seriesUrl = info.seriesUrl || pageInfo.seriesUrl;
+        if (pageInfo.chapterUrl) chapterUrl = pageInfo.chapterUrl;
+        const canonicalId = parseWeebLink(pageInfo.chapterUrl || "")?.id || "";
+        if (canonicalId) chapterId = canonicalId;
+        if (pageInfo.pages?.length) info.pages = pageInfo.pages;
+      }
+
+      /* Recovery needs the resolved number: a pasted chapter URL starts without a label or number. */
+      resolvedChapter = {
+        ...chapter,
+        id: chapterId || chapter.id || "",
+        label: info.chapterLabel || chapter.label || "",
+        number: Number.isFinite(info.chapterNumber) ? Number(info.chapterNumber) : chapter.number
+      };
+
+      let pages = info.pages;
+      if (!pages.length) {
+        if (!chapterId) throw new Error("that chapter link has no chapter id");
+
+        const imagesUrlFor = (id) => `${WEEB_ORIGIN}/chapters/${id}/images?is_prev=False&reading_style=long_strip`;
+
+        async function tryCanonicalPages() {
+          const infoHtml = await fetchLinkHtml(chapterUrl);
+          if (runId !== state.runId) return false;
+
+          const pageInfo = parseChapterInfoHtml(infoHtml);
+          const canonicalId = parseWeebLink(pageInfo.chapterUrl || "")?.id || "";
+          if (!canonicalId || canonicalId === chapterId) return false;
+
+          chapterId = canonicalId;
+          if (pageInfo.chapterUrl) chapterUrl = pageInfo.chapterUrl;
+
+          const retryHtml = await fetchLinkHtml(imagesUrlFor(chapterId));
+          if (runId !== state.runId) return false;
+          pages = parseChapterImagesHtml(retryHtml);
+          return pages.length > 0;
+        }
+
+        let canonicalTried = false;
+        try {
+          const html = await fetchLinkHtml(imagesUrlFor(chapterId));
+          if (runId !== state.runId) return { cancelled: true, found: 0 };
+          pages = parseChapterImagesHtml(html);
+        } catch (error) {
+          if (error?.name === "AbortError") throw error;
+
+          /* A pasted link can point at an outdated chapter id; retry with the page's canonical id. */
+          const skipCanonicalRetry = /HTTP 429/.test(error?.message || "") ||
+            /timed out/i.test(error?.message || "");
+          if (!skipCanonicalRetry) {
+            canonicalTried = true;
+            try {
+              await tryCanonicalPages();
+            } catch (retryError) {
+              if (retryError?.name === "AbortError") throw retryError;
+            }
+          }
+        }
+
+        /* Some outdated chapter ids return an empty gallery instead of an error. */
+        if (!pages.length && !canonicalTried) {
+          try {
+            await tryCanonicalPages();
+          } catch (retryError) {
+            if (retryError?.name === "AbortError") throw retryError;
+          }
+        }
+
+        if (!pages.length) {
+          /* The reader's /images endpoint returns a short stub; the chapter page lists every page image. */
+          try {
+            const markdown = await fetchLinkText(chapterUrl);
+            if (runId !== state.runId) return { cancelled: true, found: 0 };
+            const fallback = parseChapterMarkdown(markdown);
+            if (fallback.pages.length) {
+              pages = fallback.pages;
+              info.chapterLabel = info.chapterLabel || fallback.chapterLabel;
+              info.chapterNumber = Number.isFinite(info.chapterNumber) ? info.chapterNumber : fallback.chapterNumber;
+              info.seriesName = info.seriesName || fallback.seriesName;
+              info.seriesUrl = info.seriesUrl || fallback.seriesUrl;
+            }
+          } catch (error) {
+            if (error?.name === "AbortError") throw error;
+          }
+        }
+
+        if (!pages.length) {
+          const markdown = await fetchLinkText(imagesUrlFor(chapterId));
+          if (runId !== state.runId) return { cancelled: true, found: 0 };
+          pages = parseChapterMarkdown(markdown).pages;
+        }
+      }
+
+      if (!pages.length) throw new Error("no page images were found in that chapter");
+
+      const meta = {
+        chapterUrl,
+        chapterLabel: info.chapterLabel || "Linked chapter",
+        chapterNumber: info.chapterNumber,
+        seriesName: info.seriesName,
+        seriesUrl: info.seriesUrl,
+        pages
+      };
+      meta.pattern = deriveLinkPattern(
+        meta.pages.map((page) => page.url),
+        meta.pages[0].page,
+        meta.chapterNumber
+      );
+
+      applyLinkMeta(meta);
+
+      const seriesUrl = info.seriesUrl || "";
+      const sameNow = Boolean(seriesUrl) && state.link?.seriesUrl === seriesUrl;
+      const keepFull = sameNow && state.link?.fullList;
+
+      let chapters;
+      let fullList;
+      if (keepFull) {
+        chapters = state.link.chapters;
+        fullList = true;
+      } else if (series?.chapters?.length) {
+        chapters = series.chapters;
+        fullList = false;
+      } else if (sameNow && state.link?.chapters?.length) {
+        chapters = state.link.chapters;
+        fullList = state.link.fullList;
+      } else {
+        chapters = [];
+        fullList = false;
+      }
+
+      let chapterIndex = index;
+      if (chapterIndex < 0) chapterIndex = findChapterIndex(chapters, chapterId, meta.chapterNumber);
+
+      if (chapterIndex < 0) {
+        chapters = [
+          { id: chapterId, url: chapter.url, label: meta.chapterLabel, number: meta.chapterNumber },
+          ...chapters
+        ];
+        chapterIndex = 0;
+      }
+
+      state.link = {
+        seriesUrl,
+        seriesName: meta.seriesName || "WeebCentral series",
+        chapters,
+        fullList,
+        chapterIndex,
+        chapterUrl: chapter.url,
+        chapterLabel: meta.chapterLabel,
+        chapterNumber: meta.chapterNumber
+      };
+
+      renderExactPages(meta, !append);
+
+      if (!sameNow) els.chapterFilter.value = "";
+
+      if (fullList) {
+        renderChapterPicker();
+      } else if (seriesUrl) {
+        /* Pages first: show them now; the picker appears once the full list arrives. */
+        hideChapterPicker();
+        startChapterListLoad(seriesUrl);
+      } else {
+        renderChapterPicker();
+      }
+
+      setStatus(`Loaded ${meta.pages.length} page(s) · ${meta.chapterLabel}`, "status-ok", 4000);
+      if (!append) window.scrollTo({ top: 0, behavior: "smooth" });
+      return { cancelled: false, found: meta.pages.length, chapter: els.chapterBox.value };
+    } catch (error) {
+      if (runId !== state.runId) return { cancelled: true, found: 0 };
+
+      const target = resolvedChapter?.label ||
+        (Number.isFinite(Number(resolvedChapter?.number)) ? `Chapter ${resolvedChapter.number}` : "that link");
+
+      if (error?.name !== "AbortError") {
+        /* One stale link or rate-limited image endpoint should not kill the chapter: rebuild the pattern from the chapter page. */
+        try {
+          const recovered = await recoverChapterFromPage(resolvedChapter, { series, index, append, runId });
+          if (recovered) return recovered;
+        } catch (recoveryError) {
+          if (recoveryError?.name === "AbortError") {
+            if (runId !== state.runId) return { cancelled: true, found: 0 };
+          }
+        }
+      }
+
+      const message = error?.name === "AbortError"
+        ? "Link lookup stopped."
+        : `Could not open ${target}: ${error?.message || "unknown error"}`;
+      setStatus(message, "status-bad", 6500);
+
+      if (!append && !els.pages.querySelector(".page-wrap")) {
+        showEmptyMessage(
+          `Could not open ${target}.`,
+          `Link: ${chapter.url} — ${error?.message || "unknown error"}`,
+          {
+            label: "Retry",
+            onClick: () => openChapterFromLink(resolvedChapter, { series, index, append })
+          }
+        );
+      }
+      return { cancelled: false, found: 0, error: true };
+    } finally {
+      if (runId === state.runId) setBusy(false);
+      els.linkBtn.disabled = false;
+    }
+  }
+
+  async function seriesFromFullList(seriesUrl) {
+    const target = `${seriesUrl}/full-chapter-list`;
+    let chapters = [];
+
+    try {
+      const html = await fetchChapterListHtml(target);
+      chapters = parseFullChapterListHtml(html);
+    } catch (error) {
+      if (error?.name === "AbortError") throw error;
+    }
+
+    if (!chapters.length) {
+      const markdown = await fetchChapterListText(target);
+      chapters = parseFullChapterList(markdown);
+    }
+
+    if (!chapters.length) throw new Error("the series page and its chapter list were empty");
+    return { seriesName: "", chapters, fullList: true };
+  }
+
+  async function openSeriesFromLink(parsed, { append = false } = {}) {
+    const runId = beginRun();
+    els.linkBtn.disabled = true;
+
+    if (window.matchMedia("(pointer: coarse)").matches) hidePanel();
+    setStatus("Opening the series…", "status-warn");
+
+    try {
+      let series;
+      try {
+        const html = await fetchLinkHtml(parsed.url);
+        if (runId !== state.runId) return { cancelled: true, found: 0 };
+        series = parseSeriesHtml(html);
+        if (!series.chapters.length) throw new Error("no chapters were found on that series page");
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+
+        try {
+          const markdown = await fetchLinkText(parsed.url);
+          if (runId !== state.runId) return { cancelled: true, found: 0 };
+          series = parseSeriesMarkdown(markdown);
+          if (!series.chapters.length) throw new Error("no chapters were found on that series page");
+        } catch (fallbackError) {
+          if (fallbackError?.name === "AbortError") throw fallbackError;
+
+          /* If the full series page is unavailable, its chapter list can still open the series. */
+          series = await seriesFromFullList(parsed.url);
+          if (runId !== state.runId) return { cancelled: true, found: 0 };
+        }
+      }
+
+      const seriesUrl = parsed.url;
+      const declaredName = series.seriesName || "";
+      const seriesName = declaredName || "WeebCentral series";
+      if (state.link?.seriesUrl !== seriesUrl) els.chapterFilter.value = "";
+
+      state.link = {
+        seriesUrl,
+        seriesName,
+        chapters: series.chapters,
+        fullList: series.fullList === true,
+        chapterIndex: 0,
+        chapterUrl: series.chapters[0]?.url || "",
+        chapterLabel: series.chapters[0]?.label || "",
+        chapterNumber: series.chapters[0]?.number ?? null
+      };
+
+      /* Pages first: open the newest chapter now; the full list fills the picker in the background. */
+      hideChapterPicker();
+      const link = state.link;
+      if (!link?.chapters?.length) throw new Error("no chapters were found on that series page");
+
+      void startChapterListLoad(seriesUrl);
+
+      const firstIndex = Math.max(0, link.chapterIndex || 0);
+      const first = link.chapters[firstIndex] || link.chapters[0];
+
+      return await openChapterFromLink(
+        { url: first.url, id: first.id || "", label: first.label || "", number: first.number },
+        {
+          series: { url: seriesUrl, name: declaredName, chapters: link.chapters },
+          index: firstIndex,
+          append
+        }
+      );
+    } catch (error) {
+      if (runId !== state.runId) return { cancelled: true, found: 0 };
+
+      const message = error?.name === "AbortError"
+        ? "Link lookup stopped."
+        : `Could not open that series: ${error?.message || "unknown error"}`;
+      setStatus(message, "status-bad", 6500);
+
+      if (!append && !els.pages.querySelector(".page-wrap")) {
+        showEmptyMessage(
+          "Could not open that series.",
+          `Link: ${parsed.url} — ${error?.message || "unknown error"}`,
+          {
+            label: "Retry",
+            onClick: () => openSeriesFromLink(parsed, { append })
+          }
+        );
+      }
+      return { cancelled: false, found: 0, error: true };
+    } finally {
+      if (runId === state.runId) setBusy(false);
+      els.linkBtn.disabled = false;
+    }
+  }
+
+  function renderSearchPlaceholder(query) {
+    els.linkResults.replaceChildren();
+
+    const box = document.createElement("div");
+    box.className = "link-empty";
+    box.textContent = `Searching WeebCentral for “${query}”…`;
+
+    els.linkResults.append(box);
+    els.linkResults.hidden = false;
+  }
+
+  function abortSearchFetches() {
+    for (const key of ["searchAbort", "searchAltAbortA", "searchAltAbortB"]) {
+      state[key]?.abort();
+      state[key] = null;
+    }
+  }
+
+  function getCachedSearchResults(query) {
+    const key = String(query || "").toLowerCase();
+    const cached = searchCache.get(key);
+    if (!cached) return null;
+    if (Date.now() - cached.at > SEARCH_CACHE_TTL) {
+      searchCache.delete(key);
+      return null;
+    }
+    return cached.results;
+  }
+
+  function rememberSearchResults(query, results) {
+    const key = String(query || "").toLowerCase();
+    searchCache.delete(key);
+    searchCache.set(key, { at: Date.now(), results });
+    while (searchCache.size > SEARCH_CACHE_LIMIT) {
+      searchCache.delete(searchCache.keys().next().value);
+    }
+  }
+
+  async function loadSearchResults(query, seq, { controllerKey = "searchAbort", allowReader = true } = {}) {
+    const cached = getCachedSearchResults(query);
+    if (cached) return cached;
+
+    const searchUrl = `${WEEB_ORIGIN}/search/data?text=${encodeURIComponent(query)}`;
+    const readerUrl = `${WEEB_ORIGIN}/search?text=${encodeURIComponent(query)}`;
+
+    try {
+      const html = await fetchSearchHtml(searchUrl, controllerKey);
+      if (seq !== state.searchSeq) return null;
+      const results = rankSearchResults(parseSearchHtml(html), query);
+      rememberSearchResults(query, results);
+      return results;
+    } catch (error) {
+      if (error?.name === "AbortError" || !allowReader) throw error;
+      if (seq !== state.searchSeq) return null;
+
+      /* The full search page lists every result card; the HTMX partial only shows the first one. */
+      const markdown = await fetchSearchText(readerUrl, controllerKey);
+      if (seq !== state.searchSeq) return null;
+      const results = rankSearchResults(parseSearchMarkdown(markdown), query);
+      rememberSearchResults(query, results);
+      return results;
+    }
+  }
+
+  function closestSearchAlternatives(query) {
+    const tokens = String(query || "").split(/\s+/).filter(Boolean);
+    const alternatives = [];
+
+    if (tokens.length > 1) {
+      alternatives.push([...tokens].reverse().join(" "));
+      alternatives.push([...tokens].sort((a, b) => b.length - a.length)[0]);
+    } else if (query.length > 4) {
+      alternatives.push(query.slice(0, -1));
+    }
+
+    return [...new Set(alternatives)].filter((value) => value && value !== query && value.length >= 3);
+  }
+
+  async function searchWeeb(query) {
+    const seq = ++state.searchSeq;
+    state.searchBusy = true;
+    state.searchActiveQuery = query;
+
+    showPanel();
+    abortSearchFetches();
+    els.linkResults.setAttribute("aria-busy", "true");
+    if (!els.linkResults.querySelector(".link-result")) renderSearchPlaceholder(query);
+    setStatus(`Searching WeebCentral for “${query}”…`, "status-warn");
+
+    try {
+      let results = await loadSearchResults(query, seq);
+      if (results === null || seq !== state.searchSeq) return;
+
+      let relaxedQuery = "";
+      if (!results.length) {
+        const alternatives = closestSearchAlternatives(query).slice(0, 2);
+        const keys = ["searchAltAbortA", "searchAltAbortB"];
+        /* Without the proxy (file:// pages), relaxed searches need the reader too. */
+        const allowReader = proxyDisabled();
+        const candidates = await Promise.all(
+          alternatives.map((alternative, index) =>
+            loadSearchResults(alternative, seq, { controllerKey: keys[index], allowReader })
+              .catch(() => null)
+          )
+        );
+        if (seq !== state.searchSeq) return;
+
+        const foundIndex = candidates.findIndex((candidate) => candidate?.length);
+        if (foundIndex >= 0) {
+          results = candidates[foundIndex];
+          relaxedQuery = alternatives[foundIndex];
+        }
+      }
+
+      renderLinkResults(results, query);
+      if (results.length && relaxedQuery) {
+        setStatus(`No exact match for “${query}”. Showing closest results for “${relaxedQuery}”.`, "status-warn", 6500);
+      } else if (results.length) {
+        setStatus(`${results.length} series found. Pick one to read.`, "status-ok", 5000);
+      } else {
+        setStatus("No series found. Try a shorter title.", "status-warn", 6000);
+      }
+    } catch (error) {
+      if (seq !== state.searchSeq) return;
+
+      const aborted = error?.name === "AbortError";
+      if (!els.linkResults.querySelector(".link-result")) renderLinkResults([], query, error);
+      setStatus(
+        aborted ? "Search stopped." : `Search failed: ${error?.message || "unknown error"}`,
+        aborted ? "status-warn" : "status-bad",
+        6000
+      );
+    } finally {
+      if (seq === state.searchSeq) {
+        state.searchBusy = false;
+        els.linkResults.removeAttribute("aria-busy");
+      }
+    }
+  }
+
+  function cancelLiveSearch() {
+    clearTimeout(state.searchTimer);
+    state.searchTimer = null;
+  }
+
+  function scheduleLiveSearch() {
+    cancelLiveSearch();
+
+    const query = els.linkInput.value.trim().slice(0, 500);
+    const looksLikeUrl = /^https?:\/\//i.test(query) ||
+      /^(www\.)?weebcentral\.com\//i.test(query) ||
+      Boolean(parseWeebLink(query));
+
+    if (looksLikeUrl || query.length < 2) {
+      state.searchSeq += 1;
+      abortSearchFetches();
+      state.searchBusy = false;
+      state.searchActiveQuery = "";
+      hideLinkResults();
+      return;
+    }
+
+    /* Show progress immediately, but keep any results already on screen. */
+    showPanel();
+    els.linkResults.hidden = false;
+    els.linkResults.setAttribute("aria-busy", "true");
+    if (!els.linkResults.querySelector(".link-result")) renderSearchPlaceholder(query);
+
+    const cached = getCachedSearchResults(query);
+    if (cached?.length) {
+      state.searchSeq += 1;
+      abortSearchFetches();
+      state.searchActiveQuery = query;
+      els.linkResults.removeAttribute("aria-busy");
+      renderLinkResults(cached, query);
+      setStatus(`${cached.length} series found. Pick one to read.`, "status-ok", 5000);
+      return;
+    }
+
+    state.searchTimer = setTimeout(() => {
+      state.searchTimer = null;
+      if (els.linkInput.value.trim().slice(0, 500) !== query) return;
+      void searchWeeb(query);
+    }, LIVE_SEARCH_DELAY);
+  }
+
+  async function handleLinkAction() {
+    cancelLiveSearch();
+
+    const raw = els.linkInput.value.trim().slice(0, 500);
+    if (!raw) {
+      setStatus("Paste a WeebCentral link or type a series title.", "status-warn", 4200);
+      els.linkInput.focus();
+      return;
+    }
+
+    flushSave();
+    const parsed = parseWeebLink(raw);
+
+    if (parsed) {
+      state.searchSeq += 1;
+      abortSearchFetches();
+      state.searchBusy = false;
+      state.searchActiveQuery = "";
+      hideLinkResults();
+      els.linkInput.value = parsed.url;
+      if (parsed.kind === "series") await openSeriesFromLink(parsed);
+      else await openChapterFromLink({ url: parsed.url, label: "" });
+      return;
+    }
+
+    if (/^https?:\/\//i.test(raw) || /^www\./i.test(raw)) {
+      setStatus("That link is not a WeebCentral chapter or series link.", "status-bad", 5200);
+      return;
+    }
+
+    await searchWeeb(raw);
+  }
+
+  async function stepLinkedChapter(delta, append) {
+    const link = state.link;
+    if (!link || !Array.isArray(link.chapters) || link.chapterIndex < 0) return null;
+
+    const targetIndex = link.chapterIndex + delta;
+    const target = link.chapters[targetIndex];
+    if (!target) return null;
+
+    return openChapterItem(target, targetIndex, { append });
+  }
+
+  async function openLatestFromSeries() {
+    const seriesUrl = state.link?.seriesUrl;
+    if (!seriesUrl) return false;
+
+    state.cancelAutoNext = false;
+    els.linkBtn.disabled = true;
+    setStatus("Checking the linked series for its newest chapter…", "status-warn");
+
+    try {
+      let chapters = Array.isArray(state.link?.chapters) ? state.link.chapters : [];
+      const hasFull = state.fullListPending?.seriesUrl === seriesUrl
+        ? await state.fullListPending.promise
+        : await ensureFullChapterList(seriesUrl, { force: true, deferPicker: true });
+      if (state.cancelAutoNext) return true;
+      if (hasFull && state.link?.chapters?.length) chapters = state.link.chapters;
+
+      if (!chapters.length) {
+        let series;
+        try {
+          const html = await fetchLinkHtml(seriesUrl);
+          if (state.cancelAutoNext) return true;
+          series = parseSeriesHtml(html);
+        } catch (error) {
+          if (error?.name === "AbortError") throw error;
+          const markdown = await fetchLinkText(seriesUrl);
+          if (state.cancelAutoNext) return true;
+          series = parseSeriesMarkdown(markdown);
+        }
+        chapters = series.chapters;
+        if (!series.seriesName && state.link) state.link.seriesName = state.link.seriesName || "WeebCentral series";
+      }
+
+      if (!chapters.length) {
+        setStatus("No chapters were found on the series page.", "status-bad", 6000);
+        return true;
+      }
+
+      const newest = chapters[0];
+      els.linkInput.value = newest.url;
+      await openChapterFromLink(
+        { url: newest.url, id: newest.id || "", label: newest.label || "", number: newest.number },
+        {
+          series: { url: seriesUrl, name: state.link?.seriesName || "", chapters },
+          index: 0,
+          append: false
+        }
+      );
+    } catch (error) {
+      setStatus(
+        `Could not refresh the series: ${error?.message || "unknown error"}`,
+        "status-bad",
+        6500
+      );
+    } finally {
+      els.linkBtn.disabled = false;
+    }
+
+    return true;
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+  }
+
+  function probeImage(url, runId = null, timeoutMs = PROBE_TIMEOUT_MS, track = true) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      let settled = false;
+      let timer = null;
+
+      function finish(ok) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        img.onload = null;
+        img.onerror = null;
+        if (track) probeImages.delete(img);
+        resolve(ok);
+      }
+
+      timer = setTimeout(() => finish(false), timeoutMs);
+      img.onload = () => finish(img.naturalWidth > 0 && img.naturalHeight > 0);
+      img.onerror = () => finish(false);
+      img.referrerPolicy = "no-referrer";
+      img.decoding = "async";
+
+      if (track) probeImages.add(img);
+      img.src = url;
+
+      if (runId !== null && runId !== state.runId) finish(false);
+    });
+  }
+
+  function cancelProbes() {
+    for (const img of probeImages) {
+      img.onload = null;
+      img.onerror = null;
+      img.src = "";
+    }
+    probeImages.clear();
+  }
+
+  function beginRun() {
+    state.linkAbort?.abort();
+    state.linkAbort = null;
+    cancelProbes();
+    state.runId += 1;
+    setBusy(true);
+    return state.runId;
+  }
+
+  function setBusy(busy) {
+    state.busy = busy;
+    els.stopBtn.disabled = !busy;
+    els.panelTab.classList.toggle("is-loading", busy);
+    els.panelTabLabel.textContent = busy ? "Loading…" : "Menu";
+  }
+
+  function stopLoading(message = "Stopped.", type = "status-warn") {
+    state.cancelAutoNext = true;
+    state.runId += 1;
+    state.linkAbort?.abort();
+    state.linkAbort = null;
+    cancelProbes();
+    setBusy(false);
+    els.linkBtn.disabled = false;
+
+    if (!els.pages.querySelector(".page-wrap")) {
+      showEmptyMessage(
+        "Stopped.",
+        "No pages are loaded. Paste a WeebCentral link and tap Open / Search to try again."
+      );
+    }
+
+    if (message) setStatus(message, type, 2600);
+    else setStatus("");
+  }
+
+  async function findWorkingUrl(chapterValue, pageValue, runId) {
+    const bases = getBases();
+
+    for (let index = 0; index < bases.length; index++) {
+      if (runId !== state.runId) return null;
+
+      const url = makeUrl(bases[index], chapterValue, pageValue);
+      const ok = await probeImage(url, runId);
+      if (runId !== state.runId) return null;
+      if (ok) return { url, sourceIndex: index + 1 };
+    }
+
+    return null;
+  }
+
+  async function findWorkingUrlWithRetry(chapterValue, pageValue, runId, announce = true) {
+    const retries = Math.max(0, Math.min(20, parseInt(els.retryCount.value, 10) || 0));
+    const waitMs = Math.max(0, Math.min(10000, parseInt(els.retryWait.value, 10) || 0));
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      if (runId !== state.runId) return null;
+
+      const result = await findWorkingUrl(chapterValue, pageValue, runId);
+      if (result) return result;
+      if (runId !== state.runId) return null;
+
+      if (attempt < retries) {
+        if (announce) {
+          setStatus(
+            `Page ${padNumberString(pageValue, els.pagePad.value)} failed · retry ${attempt + 1}/${retries}…`,
+            "status-warn"
+          );
+        }
+        await sleep(waitMs);
+      }
+    }
+
+    return null;
+  }
+
+  async function chapterHasAnyPage(chapterValue, runId) {
+    let pageValue = els.pageBox.value.trim() || "1";
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (runId !== state.runId) return false;
+
+      const result = await findWorkingUrlWithRetry(chapterValue, pageValue, runId, false);
+      if (result) return true;
+
+      pageValue = incrementTextNumber(pageValue, 1, els.pagePad.value);
+    }
+
+    return false;
+  }
+
+  async function scanChapterPages(chapterValue, runId, clearExisting) {
+    const maxPages = Math.max(1, Math.min(300, parseInt(els.maxPages.value, 10) || 60));
+    const missLimit = Math.max(1, Math.min(30, parseInt(els.missLimit.value, 10) || 5));
+    const startPage = els.pageBox.value.trim() || "1";
+    const pad = els.pagePad.value;
+    const label = chapterCode(chapterValue);
+
+    let found = 0;
+    let missedInRow = 0;
+    let scanned = 0;
+    let stopped = false;
+
+    if (clearExisting) {
+      els.pages.replaceChildren();
+      updateHud();
+    } else {
+      els.pages.querySelector(".empty")?.remove();
+    }
+
+    while (scanned < maxPages && !stopped) {
+      if (runId !== state.runId) return { cancelled: true, found, chapter: chapterValue };
+
+      const batchSize = Math.min(PAGE_CONCURRENCY, maxPages - scanned);
+      const offsets = Array.from({ length: batchSize }, (_, index) => scanned + index);
+      const first = padNumberString(incrementTextNumber(startPage, offsets[0], pad), pad);
+      const last = padNumberString(incrementTextNumber(startPage, offsets[batchSize - 1], pad), pad);
+
+      setStatus(`Chapter ${label} · checking pages ${first}–${last} · ${found} found`);
+
+      const results = await Promise.all(offsets.map(async (offset) => {
+        const pageValue = incrementTextNumber(startPage, offset, pad);
+        const result = await findWorkingUrlWithRetry(chapterValue, pageValue, runId, false);
+        return { offset, pageValue, result };
+      }));
+
+      if (runId !== state.runId) return { cancelled: true, found, chapter: chapterValue };
+
+      results.sort((a, b) => a.offset - b.offset);
+
+      for (const item of results) {
+        if (item.result) {
+          addPage(item.result, {
+            chapter: chapterValue,
+            pageCode: padNumberString(item.pageValue, pad)
+          });
+          found += 1;
+          missedInRow = 0;
+        } else {
+          missedInRow += 1;
+        }
+
+        if (missedInRow >= missLimit) {
+          stopped = true;
+          break;
+        }
+      }
+
+      scanned += batchSize;
+      updateHud();
+    }
+
+    return { cancelled: false, found, chapter: chapterValue };
+  }
+
+  async function loadPages(clearExisting = true) {
+    flushSave();
+
+    const chapterValue = els.chapterBox.value.trim() || "1";
+    const label = chapterCode(chapterValue);
+
+    if (!getBases().length) {
+      setStatus("Paste a WeebCentral link, or add a source URL in the advanced settings.", "status-bad", 4600);
+      showPanel();
+      return { cancelled: false, found: 0, chapter: chapterValue };
+    }
+
+    const runId = beginRun();
+    state.cancelAutoNext = false;
+    setStatus(`Preparing chapter ${label}…`, "status-warn");
+
+    if (window.matchMedia("(pointer: coarse)").matches) hidePanel();
+
+    try {
+      const result = await scanChapterPages(chapterValue, runId, clearExisting);
+      if (result.cancelled) return result;
+
+      if (result.found === 0) {
+        if (clearExisting) {
+          showEmptyMessage(
+            "No working pages found.",
+            "Paste the chapter link again, or check the source pattern in the advanced settings."
+          );
+        }
+        setStatus(`No working pages found for chapter ${label}.`, "status-bad", 6000);
+      } else {
+        setStatus(`Loaded ${result.found} page(s) from chapter ${label}.`, "status-ok", 3500);
+        updateHud();
+
+        if (clearExisting) {
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+      }
+
+      return result;
+    } finally {
+      if (runId === state.runId) setBusy(false);
+    }
+  }
+
+  async function ensureChapterListReady() {
+    const seriesUrl = state.link?.seriesUrl;
+    if (!seriesUrl || state.link?.fullList) return true;
+
+    setStatus(`Loading the full chapter list for ${state.link?.seriesName || "this series"}…`, "status-warn");
+    return waitForFullChapterList(seriesUrl);
+  }
+
+  async function prevChapter() {
+    flushSave();
+    state.cancelAutoNext = true;
+
+    await ensureChapterListReady();
+
+    const linked = await stepLinkedChapter(1, false);
+    if (linked) return;
+
+    if (state.link?.chapters?.length) {
+      setStatus("This is the oldest chapter in the series list.", "status-warn", 3000);
+      return;
+    }
+
+    els.chapterBox.value = incrementTextNumber(els.chapterBox.value, -1, els.chapterPad.value);
+    els.pageBox.value = padNumberString(1, els.pagePad.value);
+    handleSettingChange();
+    await loadPages(true);
+  }
+
+  async function nextChapter() {
+    flushSave();
+
+    await ensureChapterListReady();
+
+    const linked = await stepLinkedChapter(-1, true);
+    if (linked) return linked;
+
+    if (state.link?.chapters?.length) {
+      setStatus("This is the newest chapter in the series list.", "status-warn", 3000);
+      return null;
+    }
+
+    els.chapterBox.value = incrementTextNumber(els.chapterBox.value, 1, els.chapterPad.value);
+    els.pageBox.value = padNumberString(1, els.pagePad.value);
+    handleSettingChange();
+    return loadPages(false);
+  }
+
+  async function autoLoadNext() {
+    const count = Math.max(1, Math.min(100, parseInt(els.autoNextCount.value, 10) || 1));
+    els.autoNextCount.value = String(count);
+    state.cancelAutoNext = false;
+
+    const buttons = [els.autoNextBtn, els.nextChapterBtn, els.bottomNextChapterBtn, els.loadBtn];
+    buttons.forEach((button) => { button.disabled = true; });
+
+    try {
+      for (let index = 0; index < count; index++) {
+        if (state.cancelAutoNext) {
+          setStatus("Auto-load stopped.", "status-warn", 2600);
+          break;
+        }
+
+        setStatus(`Loading next chapter · ${index + 1}/${count}…`, "status-warn");
+        const result = await nextChapter();
+
+        if (!result || result.cancelled || state.cancelAutoNext) {
+          setStatus(`Auto-load stopped at chapter ${chapterCode()}.`, "status-warn", 3200);
+          break;
+        }
+
+        if (result.found === 0) {
+          setStatus(`No pages in chapter ${chapterCode()}. Auto-load stopped.`, "status-warn", 5000);
+          break;
+        }
+
+        if (index === count - 1) {
+          setStatus(`Added ${count} chapter(s).`, "status-ok", 3200);
+        }
+      }
+    } finally {
+      buttons.forEach((button) => { button.disabled = false; });
+    }
+  }
+
+  async function findLatestChapter() {
+    flushSave();
+    showPanel();
+
+    if (state.link?.seriesUrl) {
+      els.latestBtn.disabled = true;
+      try {
+        if (await openLatestFromSeries()) return;
+      } finally {
+        els.latestBtn.disabled = false;
+      }
+    }
+
+    const startNumber = parseInt(els.chapterBox.value.trim() || "1", 10);
+    if (!Number.isFinite(startNumber) || startNumber < 1) {
+      setStatus("Chapter box must be a number for Latest Chapter.", "status-bad", 4200);
+      return;
+    }
+
+    const scanLimit = Math.max(1, Math.min(2000, parseInt(els.latestScanLimit.value, 10) || 300));
+    const missingLimit = Math.max(1, Math.min(50, parseInt(els.latestMissLimit.value, 10) || 10));
+
+    const runId = beginRun();
+    state.cancelAutoNext = false;
+    els.latestBtn.disabled = true;
+
+    let latest = null;
+    let missedInRow = 0;
+    let offset = 0;
+
+    setStatus(`Searching for the latest chapter from ${chapterCode()}…`, "status-warn");
+
+    try {
+      while (offset <= scanLimit) {
+        if (runId !== state.runId) return;
+
+        const batchSize = Math.min(CHAPTER_CONCURRENCY, scanLimit - offset + 1);
+        const offsets = Array.from({ length: batchSize }, (_, index) => offset + index);
+
+        setStatus(
+          `Scanning chapters ${chapterCode(String(startNumber + offsets[0]))}–${chapterCode(String(startNumber + offsets[batchSize - 1]))} · latest: ${latest ? chapterCode(latest) : "none"}`,
+          "status-warn"
+        );
+
+        const results = await Promise.all(offsets.map(async (relative) => {
+          const chapterValue = padNumberString(String(startNumber + relative), els.chapterPad.value);
+          const exists = await chapterHasAnyPage(chapterValue, runId);
+          return { relative, chapterValue, exists };
+        }));
+
+        if (runId !== state.runId) return;
+
+        results.sort((a, b) => a.relative - b.relative);
+
+        for (const item of results) {
+          if (item.exists) {
+            latest = item.chapterValue;
+            missedInRow = 0;
+          } else {
+            missedInRow += 1;
+            // Keep the stop rule accurate even when chapters were probed in a batch.
+            if (latest && missedInRow >= missingLimit) break;
+          }
+        }
+
+        offset += batchSize;
+
+        if (latest && missedInRow >= missingLimit) break;
+      }
+
+      if (runId !== state.runId) return;
+
+      if (!latest) {
+        setStatus(`No chapter found in the next ${scanLimit} chapter(s).`, "status-bad", 6000);
+        return;
+      }
+
+      els.chapterBox.value = latest;
+      els.pageBox.value = padNumberString(1, els.pagePad.value);
+      updatePreview();
+      setStatus(`Latest chapter found: ${chapterCode(latest)}. Loading…`, "status-ok");
+      await loadPages(true);
+    } finally {
+      els.latestBtn.disabled = false;
+      if (runId === state.runId) setBusy(false);
+    }
+  }
+
+  function showEmptyMessage(title, detail, action = null) {
+    const box = document.createElement("div");
+    box.className = "empty";
+
+    const heading = document.createElement("b");
+    heading.textContent = title;
+    box.appendChild(heading);
+    box.appendChild(document.createElement("br"));
+    box.appendChild(document.createTextNode(detail));
+
+    if (action?.label && typeof action.onClick === "function") {
+      const wrap = document.createElement("div");
+      wrap.style.marginTop = "14px";
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = action.label;
+      button.addEventListener("click", () => { void action.onClick(); });
+
+      wrap.appendChild(button);
+      box.appendChild(wrap);
+    }
+
+    els.pages.replaceChildren(box);
+    updateHud();
+  }
+
+  function clearReader() {
+    stopLoading("", "");
+    els.pages.replaceChildren();
+    showEmptyMessage(
+      "Cleared.",
+      "Paste a WeebCentral link in the menu and tap Open / Search to start a chapter."
+    );
+    setStatus("Cleared.", "status-ok", 2000);
+  }
+
+  async function testPreviewUrl() {
+    const url = currentPreviewUrl();
+
+    if (!els.base1.value.trim()) {
+      setStatus("Source URL prefix 1 is empty.", "status-bad", 3600);
+      return;
+    }
+
+    els.testBtn.disabled = true;
+    setStatus("Testing Source 1 with the current chapter and page…", "status-warn");
+
+    try {
+      const ok = await probeImage(url, null, PROBE_TIMEOUT_MS, false);
+      setStatus(
+        ok ? "Source 1 page loaded successfully." : "Source 1 page failed to load. Try Source 2 or check the pattern.",
+        ok ? "status-ok" : "status-bad",
+        5000
+      );
+    } finally {
+      els.testBtn.disabled = false;
+    }
+  }
+
+  async function copyPreviewUrl() {
+    const url = currentPreviewUrl();
+    if (!url) return;
+
+    try {
+      await navigator.clipboard.writeText(url);
+      setStatus("Preview URL copied.", "status-ok", 2200);
+    } catch {
+      const area = document.createElement("textarea");
+      area.value = url;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.appendChild(area);
+      area.select();
+      try {
+        document.execCommand("copy");
+        setStatus("Preview URL copied.", "status-ok", 2200);
+      } catch {
+        setStatus("Could not copy automatically. Select the URL and copy it.", "status-warn", 4000);
+      }
+      area.remove();
+    }
+  }
+
+  function addPage(probeResult, { chapter, pageCode, exact = false }) {
+    const wrap = document.createElement("div");
+    wrap.className = "page-wrap";
+    wrap.dataset.chapter = chapter;
+    wrap.dataset.page = pageCode;
+
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.referrerPolicy = "no-referrer";
+    img.alt = `Chapter ${chapterCode(chapter)} page ${pageCode}`;
+
+    const badge = document.createElement("div");
+    badge.className = "page-badge";
+
+    const pageLabel = document.createElement("span");
+    pageLabel.textContent = `P ${pageCode}`;
+
+    const sourceLabel = document.createElement("span");
+    sourceLabel.className = "src";
+    sourceLabel.textContent = `S${probeResult.sourceIndex}`;
+
+    badge.append(pageLabel, sourceLabel);
+
+    const candidates = [{ url: probeResult.url, sourceIndex: probeResult.sourceIndex }];
+
+    /* The image host sometimes changes between scans-/hot./etc. Keep a mirror as a quiet fallback. */
+    const mirrorUrl = alternateScanBase(probeResult.url);
+    if (mirrorUrl && mirrorUrl !== probeResult.url) {
+      candidates.push({ url: mirrorUrl, sourceIndex: probeResult.sourceIndex });
+    }
+
+    if (!exact) {
+      getBases().forEach((base, index) => {
+        const url = makeUrl(base, chapter, pageCode);
+        if (!candidates.some((candidate) => candidate.url === url)) {
+          candidates.push({ url, sourceIndex: index + 1 });
+        }
+      });
+    }
+
+    let candidateIndex = 0;
+
+    function showCandidate() {
+      if (candidateIndex >= candidates.length) {
+        showPageError(wrap, chapter, pageCode);
+        return;
+      }
+
+      const candidate = candidates[candidateIndex++];
+      sourceLabel.textContent = `S${candidate.sourceIndex}`;
+      img.src = candidate.url;
+    }
+
+    img.addEventListener("load", () => {
+      wrap.classList.add("is-loaded");
+      wrap.classList.remove("is-error");
+      wrap.querySelector(".page-error")?.remove();
+      updateHud();
+    });
+
+    img.addEventListener("error", () => {
+      if (candidateIndex < candidates.length) showCandidate();
+      else showPageError(wrap, chapter, pageCode);
+    });
+
+    img.addEventListener("click", () => openLightbox(img));
+    img.tabIndex = 0;
+    img.setAttribute("role", "button");
+    img.setAttribute("aria-label", `Open chapter ${chapterCode(chapter)} page ${pageCode} in the lightbox`);
+    img.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openLightbox(img);
+      }
+    });
+
+    wrap.append(img, badge);
+    els.pages.appendChild(wrap);
+    showCandidate();
+    updateHud();
+
+    return wrap;
+  }
+
+  function showPageError(wrap, chapter, pageCode) {
+    if (!wrap.isConnected) return;
+
+    wrap.classList.add("is-error");
+    wrap.querySelector(".page-error")?.remove();
+
+    const box = document.createElement("div");
+    box.className = "page-error";
+
+    const text = document.createElement("div");
+    text.textContent = `Page ${pageCode} could not be loaded from any source.`;
+
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "btn";
+    retry.textContent = "Retry page";
+    retry.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void retryPage(wrap, chapter, pageCode);
+    });
+
+    box.append(text, retry);
+    wrap.appendChild(box);
+  }
+
+  async function retryPage(wrap, chapter, pageCode) {
+    if (!wrap.isConnected) return;
+
+    const img = wrap.querySelector("img");
+    const badgeSource = wrap.querySelector(".page-badge .src");
+    if (!img) return;
+
+    wrap.classList.remove("is-error");
+    wrap.querySelector(".page-error")?.remove();
+    setStatus(`Retrying page ${pageCode}…`, "status-warn");
+
+    const bases = getBases();
+
+    for (let index = 0; index < bases.length; index++) {
+      const url = makeUrl(bases[index], chapter, pageCode);
+      if (badgeSource) badgeSource.textContent = `S${index + 1}`;
+
+      const ok = await probeImage(url, null, PROBE_TIMEOUT_MS, false);
+      if (ok) {
+        img.src = url;
+        setStatus(`Page ${pageCode} loaded from source ${index + 1}.`, "status-ok", 2400);
+        return;
+      }
+    }
+
+    showPageError(wrap, chapter, pageCode);
+    setStatus(`Page ${pageCode} is still unavailable.`, "status-bad", 3600);
+  }
+
+  function updateHud() {
+    const wraps = els.pages.querySelectorAll(".page-wrap");
+    els.bottomChapterNav.hidden = wraps.length === 0;
+
+    if (!wraps.length) {
+      els.readingHud.hidden = true;
+      return;
+    }
+
+    els.readingHud.hidden = false;
+    els.hudPages.textContent = `${wraps.length} page${wraps.length === 1 ? "" : "s"}`;
+    updateHudPosition();
+  }
+
+  function updateHudPosition() {
+    if (els.readingHud.hidden) return;
+
+    const wraps = [...els.pages.querySelectorAll(".page-wrap")];
+    if (!wraps.length) return;
+
+    const middle = window.innerHeight / 2;
+    let current = null;
+    let bestDistance = Infinity;
+
+    for (const wrap of wraps) {
+      const rect = wrap.getBoundingClientRect();
+      if (rect.bottom < 0 || rect.top > window.innerHeight) continue;
+
+      const distance = Math.abs((rect.top + rect.bottom) / 2 - middle);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        current = wrap;
+      }
+    }
+
+    if (!current) return;
+
+    els.hudChapter.textContent = `Chapter ${chapterCode(current.dataset.chapter)}`;
+    els.hudPosition.textContent = `P ${current.dataset.page}`;
+  }
+
+  function scheduleHudUpdate() {
+    if (state.hudFrame) return;
+    state.hudFrame = setTimeout(() => {
+      state.hudFrame = 0;
+      updateHudPosition();
+    }, 80);
+  }
+
+  function lightboxImages() {
+    return [...els.pages.querySelectorAll(".page-wrap img")]
+      .filter((img) => img.naturalWidth > 0 && !img.closest(".page-wrap.is-error"));
+  }
+
+  function openLightbox(image) {
+    const images = lightboxImages();
+    const index = images.indexOf(image);
+    if (index < 0) return;
+
+    state.lightboxIndex = index;
+    state.lastFocus = document.activeElement;
+    state.zoom = 0;
+    els.lightbox.hidden = false;
+    document.body.classList.add("lightbox-open");
+    renderLightbox();
+    els.lbClose.focus();
+  }
+
+  function renderLightbox() {
+    const images = lightboxImages();
+
+    if (!images.length) {
+      closeLightbox();
+      return;
+    }
+
+    state.lightboxIndex = Math.max(0, Math.min(images.length - 1, state.lightboxIndex));
+    const image = images[state.lightboxIndex];
+    const wrap = image.closest(".page-wrap");
+    const source = image.currentSrc || image.src;
+    const chapter = wrap?.dataset.chapter || els.chapterBox.value;
+    const page = wrap?.dataset.page || "?";
+
+    els.lightboxImg.src = source;
+    els.lightboxImg.alt = image.alt;
+    els.lightboxCaption.textContent =
+      `Chapter ${chapterCode(chapter)} · Page ${page} · ${state.lightboxIndex + 1}/${images.length}`;
+    els.lbOpen.href = source;
+    els.lbDownload.href = source;
+    els.lbPrev.disabled = state.lightboxIndex === 0;
+    els.lbNext.disabled = state.lightboxIndex === images.length - 1;
+    applyZoom();
+    els.lightboxStage.scrollTo({ top: 0, left: 0 });
+  }
+
+  function closeLightbox() {
+    if (els.lightbox.hidden) return;
+
+    els.lightbox.hidden = true;
+    els.lightboxImg.removeAttribute("src");
+    document.body.classList.remove("lightbox-open");
+    state.lightboxIndex = -1;
+    state.lastFocus?.focus?.();
+    state.lastFocus = null;
+  }
+
+  function stepLightbox(delta) {
+    const images = lightboxImages();
+    const nextIndex = state.lightboxIndex + delta;
+    if (nextIndex < 0 || nextIndex >= images.length) return;
+
+    state.lightboxIndex = nextIndex;
+    state.zoom = 0;
+    renderLightbox();
+  }
+
+  function applyZoom() {
+    const image = els.lightboxImg;
+
+    if (state.zoom === 0) {
+      image.style.width = "";
+      image.style.maxWidth = "";
+      image.style.maxHeight = "";
+      els.lbZoomFit.textContent = "Fit";
+    } else {
+      image.style.maxWidth = "none";
+      image.style.maxHeight = "none";
+      image.style.width = `${state.zoom}%`;
+      els.lbZoomFit.textContent = `${state.zoom}%`;
+    }
+  }
+
+  function setZoom(value) {
+    state.zoom = Math.max(0, Math.min(400, value));
+    applyZoom();
+  }
+
+  function isPanelOpen() {
+    return els.panel.classList.contains("is-open");
+  }
+
+  function updatePanelMetrics() {
+    const height = Math.ceil(els.panel.getBoundingClientRect().height);
+    document.documentElement.style.setProperty("--panel-hide-distance", `${Math.max(0, height + 4)}px`);
+  }
+
+  function positionPanelTab() {
+    if (isPanelOpen()) {
+      const height = Math.ceil(els.panel.getBoundingClientRect().height);
+      const tabHeight = Math.ceil(els.panelTab.getBoundingClientRect().height) || 48;
+      els.panelTab.style.top = `${Math.min(Math.max(height - 1, 0), Math.max(0, window.innerHeight - tabHeight))}px`;
+    } else {
+      els.panelTab.style.top = "0px";
+    }
+  }
+
+  function showPanel() {
+    clearTimeout(state.closeTimer);
+    updatePanelMetrics();
+    els.panel.classList.add("is-open");
+    els.panel.inert = false;
+    els.panel.setAttribute("aria-hidden", "false");
+    els.panelTab.setAttribute("aria-expanded", "true");
+    positionPanelTab();
+    // Re-check once fonts/wrapping settle; setInterval is not necessary.
+    setTimeout(positionPanelTab, 60);
+  }
+
+  function hidePanel() {
+    clearTimeout(state.closeTimer);
+    updatePanelMetrics();
+    els.panel.classList.remove("is-open");
+    els.panel.inert = true;
+    els.panel.setAttribute("aria-hidden", "true");
+    els.panelTab.setAttribute("aria-expanded", "false");
+    els.panelTab.style.top = "0px";
+    document.activeElement?.blur?.();
+  }
+
+  function scheduleAutoClose(delay = 900) {
+    clearTimeout(state.closeTimer);
+    state.closeTimer = setTimeout(() => {
+      if (!isPanelOpen()) return;
+
+      const active = document.activeElement;
+      const typing = active && els.panel.contains(active) &&
+        ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName);
+
+      if (typing || els.panel.matches(":hover")) return;
+      hidePanel();
+    }, delay);
+  }
+
+  function togglePanel() {
+    if (isPanelOpen()) hidePanel();
+    else showPanel();
+  }
+
+  function setHelpMode(mode) {
+    state.helpMode = mode === "advanced" ? "advanced" : "quick";
+    const advanced = state.helpMode === "advanced";
+
+    els.quickHelpTab.classList.toggle("active", !advanced);
+    els.advancedHelpTab.classList.toggle("active", advanced);
+    els.quickHelpContent.hidden = advanced;
+    els.advancedHelpContent.hidden = !advanced;
+    els.helpTitle.textContent = advanced ? "Advanced Guide" : "How to use the reader";
+    els.helpSubtitle.textContent = advanced
+      ? "Every button, box, setting and feature"
+      : "Fast setup and easy navigation";
+  }
+
+  function showHelp(mode = "quick") {
+    flushSave();
+    setHelpMode(mode);
+    els.helpOverlay.classList.add("show");
+    els.helpOverlay.setAttribute("aria-hidden", "false");
+    document.body.classList.add("help-open");
+    setTimeout(() => els.helpCloseBtn.focus(), 0);
+  }
+
+  function hideHelp() {
+    els.helpOverlay.classList.remove("show");
+    els.helpOverlay.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("help-open");
+    els.helpBtn.focus();
+  }
+
+  function trapFocus(container, event) {
+    const focusables = [...container.querySelectorAll(
+      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )].filter((element) => element.offsetParent !== null);
+
+    if (!focusables.length) return;
+
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  function exportSettings() {
+    flushSave();
+
+    const payload = {
+      app: "manga-image-reader",
+      version: SETTINGS_VERSION,
+      exportedAt: new Date().toISOString(),
+      groups: store.groups,
+      selectedGroup: state.activeGroup
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.href = url;
+    link.download = "manga_reader_settings.json";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    setStatus("Settings exported.", "status-ok", 2600);
+  }
+
+  async function importSettings(file) {
+    if (!file) return;
+
+    try {
+      const parsed = JSON.parse(await file.text());
+      const normalized = normalizeData(parsed);
+
+      if (!normalized) throw new Error("Invalid settings");
+
+      const count = Object.keys(normalized.groups).length;
+      if (Object.keys(store.groups).length && !confirm(`Import ${count} group(s) and replace the current groups?`)) {
+        return;
+      }
+
+      store = normalized;
+      state.activeGroup = store.selectedGroup;
+      persistStore();
+      renderGroupOptions(state.activeGroup);
+      els.groupName.value = state.activeGroup;
+      applyGroupData(store.groups[state.activeGroup]);
+      setStatus(`Imported ${count} group(s).`, "status-ok", 3200);
+    } catch {
+      setStatus("Could not import: the file is not valid reader settings.", "status-bad", 5000);
+    } finally {
+      els.importInput.value = "";
+    }
+  }
+
+  function init() {
+    const local = loadLocalStore();
+    const hadLocal = Boolean(local);
+
+    store = local || createDefaultStore();
+    state.activeGroup = store.selectedGroup;
+
+    renderGroupOptions(state.activeGroup);
+    els.groupName.value = state.activeGroup;
+    applyGroupData(store.groups[state.activeGroup]);
+    updatePanelMetrics();
+    hidePanel();
+    setBusy(false);
+    updateHud();
+
+    if (hadLocal) saveLocal(store);
+    else persistStore(false);
+
+    if (window.google && google.script && google.script.run) {
+      google.script.run
+        .withSuccessHandler((data) => {
+          if (hadLocal) return;
+
+          const normalized = normalizeData(data);
+          if (!normalized) return;
+
+          store = normalized;
+          state.activeGroup = store.selectedGroup;
+          saveLocal(store);
+          renderGroupOptions(state.activeGroup);
+          els.groupName.value = state.activeGroup;
+          applyGroupData(store.groups[state.activeGroup]);
+        })
+        .withFailureHandler(() => {})
+        .getSavedSettings();
+    }
+  }
+
+  /* group controls */
+  els.groupSelect.addEventListener("change", () => {
+    flushSave();
+    loadSelectedGroup();
+  });
+
+  els.newGroupBtn.addEventListener("click", () => {
+    flushSave();
+    newGroup();
+  });
+
+  els.saveGroupBtn.addEventListener("click", () => saveActiveGroup(true, true));
+  els.deleteGroupBtn.addEventListener("click", deleteGroup);
+  els.exportBtn.addEventListener("click", exportSettings);
+  els.importInput.addEventListener("change", () => void importSettings(els.importInput.files?.[0]));
+
+  els.groupName.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      saveActiveGroup(true, true);
+    }
+  });
+
+  /* link / search */
+  els.linkBtn.addEventListener("click", () => void handleLinkAction());
+
+  els.linkInput.addEventListener("input", scheduleLiveSearch);
+
+  els.linkInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void handleLinkAction();
+    }
+  });
+
+  els.chapterFilter.addEventListener("input", filterChapterOptions);
+
+  els.chapterSelect.addEventListener("change", () => {
+    const index = parseInt(els.chapterSelect.value, 10);
+    const link = state.link;
+    if (!Number.isFinite(index) || !Array.isArray(link?.chapters)) return;
+    const item = link.chapters[index];
+    if (item) void openChapterItem(item, index);
+  });
+
+  els.chapterListBtn.addEventListener("click", () => {
+    const seriesUrl = state.link?.seriesUrl;
+    if (!seriesUrl) {
+      setStatus("Open a series first, then refresh its chapter list.", "status-warn", 4200);
+      return;
+    }
+    void ensureFullChapterList(seriesUrl, { force: true });
+  });
+
+  /* settings */
+  for (const key of SETTING_KEYS) {
+    if (key === "width" || key === "link") continue;
+    els[key].addEventListener("input", handleSettingChange);
+    els[key].addEventListener("change", handleSettingChange);
+  }
+
+  els.width.addEventListener("change", () => {
+    applyReaderWidth();
+    handleSettingChange();
+  });
+
+  /* reader actions */
+  els.loadBtn.addEventListener("click", () => void loadPages(true));
+  els.latestBtn.addEventListener("click", () => void findLatestChapter());
+  els.prevChapterBtn.addEventListener("click", prevChapter);
+  els.nextChapterBtn.addEventListener("click", () => void nextChapter());
+  els.autoNextBtn.addEventListener("click", () => void autoLoadNext());
+  els.stopBtn.addEventListener("click", () => stopLoading("Stopped."));
+  els.clearBtn.addEventListener("click", clearReader);
+  els.bottomPrevChapterBtn.addEventListener("click", prevChapter);
+  els.bottomNextChapterBtn.addEventListener("click", () => void nextChapter());
+  els.copyPreviewBtn.addEventListener("click", () => void copyPreviewUrl());
+  els.testBtn.addEventListener("click", () => void testPreviewUrl());
+
+  /* panel */
+  els.hidePanelBtn.addEventListener("click", hidePanel);
+
+  els.panelTab.addEventListener("click", (event) => {
+    event.preventDefault();
+    togglePanel();
+  });
+
+  els.panelTab.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      togglePanel();
+    }
+  });
+
+  els.panel.addEventListener("mouseenter", () => {
+    if (!window.matchMedia("(pointer: coarse)").matches) clearTimeout(state.closeTimer);
+  });
+
+  els.panel.addEventListener("mouseleave", () => {
+    if (!window.matchMedia("(pointer: coarse)").matches && isPanelOpen()) scheduleAutoClose(700);
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!isPanelOpen()) return;
+    if (els.panelTab.contains(event.target) || els.panel.contains(event.target)) return;
+
+    if (window.matchMedia("(pointer: coarse)").matches) hidePanel();
+    else scheduleAutoClose(250);
+  });
+
+  /* help */
+  els.helpBtn.addEventListener("click", () => showHelp("quick"));
+  els.quickHelpTab.addEventListener("click", () => setHelpMode("quick"));
+  els.advancedHelpTab.addEventListener("click", () => setHelpMode("advanced"));
+  els.helpCloseBtn.addEventListener("click", hideHelp);
+  els.helpGotItBtn.addEventListener("click", hideHelp);
+
+  els.helpOverlay.addEventListener("click", (event) => {
+    if (event.target === els.helpOverlay) hideHelp();
+  });
+
+  /* lightbox */
+  els.lightboxImg.addEventListener("click", closeLightbox);
+  els.lbClose.addEventListener("click", closeLightbox);
+  els.lbPrev.addEventListener("click", () => stepLightbox(-1));
+  els.lbNext.addEventListener("click", () => stepLightbox(1));
+  els.lbZoomIn.addEventListener("click", () => setZoom(state.zoom === 0 ? 100 : state.zoom + 25));
+  els.lbZoomOut.addEventListener("click", () => {
+    setZoom(state.zoom === 0 ? 0 : (state.zoom - 25 < 50 ? 0 : state.zoom - 25));
+  });
+  els.lbZoomFit.addEventListener("click", () => setZoom(0));
+
+  els.lightboxStage.addEventListener("click", (event) => {
+    if (event.target === els.lightboxStage) closeLightbox();
+  });
+
+  /* keyboard shortcuts */
+  document.addEventListener("keydown", (event) => {
+    if (!els.lightbox.hidden) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeLightbox();
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        stepLightbox(-1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        stepLightbox(1);
+      } else if (event.key === "+" || event.key === "=") {
+        event.preventDefault();
+        setZoom(state.zoom === 0 ? 100 : state.zoom + 25);
+      } else if (event.key === "-" || event.key === "_") {
+        event.preventDefault();
+        setZoom(state.zoom === 0 ? 0 : (state.zoom - 25 < 50 ? 0 : state.zoom - 25));
+      } else if (event.key === "0") {
+        event.preventDefault();
+        setZoom(0);
+      } else if (event.key === "Tab") {
+        trapFocus(els.lightbox, event);
+      }
+      return;
+    }
+
+    if (els.helpOverlay.classList.contains("show")) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        hideHelp();
+      } else if (event.key === "Tab") {
+        trapFocus(els.helpOverlay.querySelector(".help-dialog"), event);
+      }
+      return;
+    }
+
+    const tag = event.target.tagName;
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || event.target.isContentEditable) return;
+
+    if (event.key.toLowerCase() === "p") {
+      event.preventDefault();
+      togglePanel();
+    } else if (event.key.toLowerCase() === "r") {
+      event.preventDefault();
+      void loadPages(true);
+    } else if (event.key === "Escape") {
+      hidePanel();
+    } else if (event.key === "ArrowLeft") {
+      prevChapter();
+    } else if (event.key === "ArrowRight") {
+      void nextChapter();
+    } else if (event.key === "?") {
+      event.preventDefault();
+      showHelp("quick");
+    }
+  });
+
+  window.addEventListener("scroll", scheduleHudUpdate, { passive: true });
+  window.addEventListener("resize", () => {
+    updatePanelMetrics();
+    positionPanelTab();
+    scheduleHudUpdate();
+  });
+  window.addEventListener("orientationchange", () => {
+    setTimeout(() => {
+      updatePanelMetrics();
+      positionPanelTab();
+    }, 80);
+  });
+
+  if (window.ResizeObserver) {
+    const panelObserver = new ResizeObserver(() => {
+      updatePanelMetrics();
+      positionPanelTab();
+    });
+    panelObserver.observe(els.panel);
+  }
+
+  window.addEventListener("beforeunload", flushSave);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushSave();
+  });
+
+  init();
+})();
+  </script>
+</body>
+
+</html>
