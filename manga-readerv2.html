@@ -1021,7 +1021,7 @@
         </div>
         <input id="chapterFilter" type="search" placeholder="Filter chapters (for example 1198)" aria-label="Filter chapter list" autocomplete="off">
         <select id="chapterSelect" aria-label="Choose a chapter"></select>
-        <div class="chapter-picker-hint">Choosing a chapter loads its pages from the WeebCentral-derived image source.</div>
+        <div class="chapter-picker-hint">Type a number to filter the list; press Enter to open the first match.</div>
       </div>
 
       <div class="row actions">
@@ -1283,6 +1283,11 @@
   const $ = (id) => document.getElementById(id);
   const STORAGE_KEY = "appsScriptMangaReader";
   const PROGRESS_KEY = "appsScriptMangaReader.progress";
+  const LAST_SERIES_KEY = "appsScriptMangaReader.lastSeries";
+  const LIST_CACHE_KEY = "appsScriptMangaReader.chapterLists";
+  const LIST_CACHE_MAX_SERIES = 3;
+  const LIST_CACHE_MAX_CHAPTERS = 2000;
+  const LIST_CACHE_TTL = 6 * 60 * 60 * 1000;
   const PROGRESS_MAX_PAGES = 300;
   const PROGRESS_MAX_GROUPS = 6;
   const PROGRESS_SAVE_DELAY = 700;
@@ -1590,6 +1595,173 @@
     }
   }
 
+  /* ---------- chapter list cache (so the picker survives a failed fetch) ---------- */
+
+  function readListCache() {
+    try {
+      const raw = localStorage.getItem(LIST_CACHE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      return parsed;
+    } catch {
+      return {};
+    }
+  }
+
+  function writeListCache(cache) {
+    try {
+      localStorage.setItem(LIST_CACHE_KEY, JSON.stringify(cache));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function cacheChapterList({ seriesUrl, seriesName, chapters, fullList }) {
+    if (!seriesUrl || !Array.isArray(chapters) || !chapters.length) return;
+
+    const items = chapters.slice(0, LIST_CACHE_MAX_CHAPTERS).map((item) => [
+      cleanText(item.id || "", 40),
+      cleanText(item.url || "", 300),
+      cleanText(item.label || "", 90),
+      Number.isFinite(item.number) ? item.number : null
+    ]);
+
+    const cache = readListCache();
+    cache[seriesUrl] = {
+      seriesName: cleanText(seriesName || "", 90),
+      fullList: Boolean(fullList),
+      at: Date.now(),
+      items
+    };
+
+    const keep = Object.keys(cache)
+      .sort((a, b) => (Number(cache[b]?.at) || 0) - (Number(cache[a]?.at) || 0))
+      .slice(0, LIST_CACHE_MAX_SERIES);
+
+    const trimmed = {};
+    for (const key of keep) trimmed[key] = cache[key];
+    writeListCache(trimmed);
+  }
+
+  function rememberChapterList() {
+    const link = state.link;
+    if (!link?.seriesUrl || !Array.isArray(link.chapters) || !link.chapters.length) return;
+    cacheChapterList({
+      seriesUrl: link.seriesUrl,
+      seriesName: link.seriesName,
+      chapters: link.chapters,
+      fullList: link.fullList === true
+    });
+    rememberLastSeries();
+  }
+
+  function chaptersFromCache(entry) {
+    if (!entry || !Array.isArray(entry.items)) return [];
+
+    return entry.items
+      .map((row) => {
+        const [id, url, label, number] = Array.isArray(row) ? row : [];
+        return {
+          id: typeof id === "string" ? id : "",
+          url: typeof url === "string" ? url : "",
+          label: typeof label === "string" ? label : "",
+          number: Number.isFinite(number) ? number : null
+        };
+      })
+      .filter((item) => item.label || item.url);
+  }
+
+  function cachedSeriesFor(saved) {
+    const cache = readListCache();
+
+    if (saved?.seriesUrl && cache[saved.seriesUrl]) {
+      return { seriesUrl: saved.seriesUrl, entry: cache[saved.seriesUrl] };
+    }
+
+    if (saved?.chapterUrl) {
+      const savedId = parseWeebLink(saved.chapterUrl)?.id || "";
+
+      for (const [seriesUrl, entry] of Object.entries(cache)) {
+        const rows = entry?.items || [];
+        const hit = rows.some((row) => Array.isArray(row) && (row[1] === saved.chapterUrl || (savedId && row[0] === savedId)));
+        if (hit) return { seriesUrl, entry };
+      }
+    }
+
+    /* One cached series is almost certainly the one that was being read. */
+    const only = Object.keys(cache);
+    if (only.length === 1) return { seriesUrl: only[0], entry: cache[only[0]] };
+
+    return null;
+  }
+
+  /* ---------- last opened series (keeps the picker after a restart) ---------- */
+
+  function readLastSeries() {
+    try {
+      const raw = localStorage.getItem(LAST_SERIES_KEY);
+      if (!raw) return null;
+
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      if (!/^https?:\/\//i.test(parsed.seriesUrl || "")) return null;
+
+      return {
+        seriesUrl: cleanText(parsed.seriesUrl, 500),
+        seriesName: cleanText(parsed.seriesName, 90),
+        chapter: cleanText(parsed.chapter, 40),
+        chapterLabel: cleanText(parsed.chapterLabel, 40),
+        chapterUrl: /^https?:\/\//i.test(parsed.chapterUrl || "") ? cleanText(parsed.chapterUrl, 500) : "",
+        at: Number(parsed.at) || 0
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function rememberLastSeries(extra = {}) {
+    const link = state.link;
+    const seriesUrl = extra.seriesUrl || link?.seriesUrl || "";
+    if (!/^https?:\/\//i.test(seriesUrl)) return;
+
+    const chapterUrl = extra.chapterUrl || link?.chapterUrl || "";
+
+    try {
+      localStorage.setItem(LAST_SERIES_KEY, JSON.stringify({
+        seriesUrl: cleanText(seriesUrl, 500),
+        seriesName: cleanText(extra.seriesName || link?.seriesName || "", 90),
+        chapter: cleanText(extra.chapter || els.chapterBox.value || "", 40),
+        chapterLabel: cleanText(extra.chapterLabel || link?.chapterLabel || "", 40),
+        chapterUrl: /^https?:\/\//i.test(chapterUrl) ? cleanText(chapterUrl, 500) : "",
+        at: Date.now()
+      }));
+    } catch {
+      /* Storage full: the progress entry still restores the chapter itself. */
+    }
+  }
+
+  function nearestChapterIndex(chapters, number) {
+    if (!Array.isArray(chapters) || !chapters.length) return -1;
+    if (!Number.isFinite(number)) return 0;
+
+    let best = 0;
+    let bestDiff = Infinity;
+
+    chapters.forEach((item, index) => {
+      const value = Number(item?.number);
+      if (!Number.isFinite(value)) return;
+      const diff = Math.abs(value - number);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = index;
+      }
+    });
+
+    return best;
+  }
+
   function sanitizeProgress(raw) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
 
@@ -1608,6 +1780,9 @@
       group: cleanText(raw.group, 80),
       chapter: cleanText(raw.chapter, 40),
       label: cleanText(raw.label, 40),
+      seriesUrl: /^https?:\/\//i.test(raw.seriesUrl || "") ? cleanText(raw.seriesUrl, 500) : "",
+      seriesName: cleanText(raw.seriesName, 90),
+      chapterUrl: /^https?:\/\//i.test(raw.chapterUrl || "") ? cleanText(raw.chapterUrl, 500) : "",
       index,
       pages,
       codes,
@@ -1655,6 +1830,9 @@
       group: state.activeGroup,
       chapter: els.chapterBox.value,
       label: chapterCode(),
+      seriesUrl: state.link?.seriesUrl || "",
+      seriesName: state.link?.seriesName || "",
+      chapterUrl: state.link?.chapterUrl || "",
       index: Math.min(currentPageIndex(wraps), pages.length - 1),
       pages,
       codes,
@@ -1680,6 +1858,18 @@
     const trimmed = {};
     for (const name of keep) trimmed[name] = map[name];
     writeProgressMap(trimmed);
+
+    /* Also remember the series outside the per-group entry, so the chapter picker
+       returns even if this group's progress is trimmed away. */
+    if (data.seriesUrl) {
+      rememberLastSeries({
+        seriesUrl: data.seriesUrl,
+        seriesName: data.seriesName,
+        chapter: data.chapter,
+        chapterLabel: data.label,
+        chapterUrl: data.chapterUrl
+      });
+    }
   }
 
   function scheduleProgressSave() {
@@ -1744,6 +1934,83 @@
     });
   }
 
+  /* Older progress entries only kept the page URLs. Read the chapter page once to
+     learn its series, so the chapter picker comes back for those too. */
+  async function restoreSeriesFromChapter(saved) {
+    if (!saved?.chapterUrl || state.link) return false;
+
+    try {
+      let info = null;
+
+      try {
+        const html = await fetchLinkHtml(saved.chapterUrl);
+        info = parseChapterInfoHtml(html);
+      } catch (error) {
+        if (error?.name === "AbortError") return false;
+        const markdown = await fetchLinkText(saved.chapterUrl);
+        info = parseChapterMarkdown(markdown);
+      }
+
+      const seriesUrl = info?.seriesUrl || "";
+      if (!seriesUrl || state.link) return false;
+
+      const chapterNumber = parseFloat(saved.chapter);
+
+      state.link = {
+        seriesUrl,
+        seriesName: info.seriesName || saved.seriesName || "WeebCentral series",
+        chapters: [],
+        fullList: false,
+        chapterIndex: -1,
+        chapterUrl: "",
+        chapterLabel: saved.label || info.chapterLabel || "",
+        chapterNumber: Number.isFinite(chapterNumber)
+          ? chapterNumber
+          : (Number.isFinite(info.chapterNumber) ? info.chapterNumber : null)
+      };
+
+      return Boolean(await ensureFullChapterList(seriesUrl).catch(() => false));
+    } catch {
+      return false;
+    }
+  }
+
+  /* The saved progress can predate series tracking, or belong to another group.
+     The last opened series still brings the picker back. */
+  function restoreLastSeriesPicker(saved = null) {
+    if (state.link) return false;
+
+    const last = readLastSeries();
+    if (!last) return false;
+
+    /* The last series is authoritative here; the cache only supplies its chapters. */
+    const cached = readListCache()[last.seriesUrl];
+    const seriesUrl = last.seriesUrl;
+    const chapters = cached ? chaptersFromCache(cached) : [];
+    const number = parseFloat(saved?.chapter || last.chapter || "");
+    const index = nearestChapterIndex(chapters, number);
+
+    state.link = {
+      seriesUrl,
+      seriesName: cached?.seriesName || last.seriesName || "WeebCentral series",
+      chapters,
+      fullList: cached?.fullList === true,
+      chapterIndex: index,
+      chapterUrl: index >= 0 ? chapters[index].url || "" : "",
+      chapterLabel: index >= 0 ? chapters[index].label || "" : (saved?.label || last.chapterLabel || ""),
+      chapterNumber: index >= 0 ? chapters[index].number : (Number.isFinite(number) ? number : null)
+    };
+
+    renderChapterPicker();
+
+    const age = Date.now() - (Number(cached?.at) || 0);
+    if (!cached || !state.link.fullList || age > LIST_CACHE_TTL) {
+      void ensureFullChapterList(seriesUrl, { force: Boolean(cached) }).catch(() => false);
+    }
+
+    return true;
+  }
+
   function restoreSession() {
     const saved = sanitizeProgress(readProgressMap()[state.activeGroup]);
     if (!saved) return false;
@@ -1766,6 +2033,50 @@
 
     updateHud();
     scrollToRestoredPage(saved);
+
+    /* Rebuild the chapter picker for the same series, so it is there after a restart.
+       The cached copy renders immediately; the network only refreshes it. */
+    const chapterNumber = parseFloat(saved.chapter);
+    const cached = cachedSeriesFor(saved);
+
+    if (cached) {
+      const chapters = chaptersFromCache(cached.entry);
+      const index = nearestChapterIndex(chapters, chapterNumber);
+
+      state.link = {
+        seriesUrl: cached.seriesUrl,
+        seriesName: cached.entry.seriesName || saved.seriesName || "WeebCentral series",
+        chapters,
+        fullList: cached.entry.fullList === true,
+        chapterIndex: index,
+        chapterUrl: index >= 0 ? chapters[index].url || "" : "",
+        chapterLabel: index >= 0 ? chapters[index].label || "" : saved.label || "",
+        chapterNumber: index >= 0 ? chapters[index].number : (Number.isFinite(chapterNumber) ? chapterNumber : null)
+      };
+
+      renderChapterPicker();
+
+      const age = Date.now() - (Number(cached.entry.at) || 0);
+      if (!state.link.fullList || age > LIST_CACHE_TTL) {
+        void ensureFullChapterList(cached.seriesUrl, { force: true }).catch(() => false);
+      }
+    } else if (saved.seriesUrl) {
+      state.link = {
+        seriesUrl: saved.seriesUrl,
+        seriesName: saved.seriesName || "WeebCentral series",
+        chapters: [],
+        fullList: false,
+        chapterIndex: -1,
+        chapterUrl: "",
+        chapterLabel: saved.label || "",
+        chapterNumber: Number.isFinite(chapterNumber) ? chapterNumber : null
+      };
+      void ensureFullChapterList(saved.seriesUrl).catch(() => false);
+    } else if (saved.chapterUrl) {
+      void restoreSeriesFromChapter(saved);
+    }
+
+    if (!state.link) restoreLastSeriesPicker(saved);
 
     state.progressSig = [saved.group, saved.chapter, saved.index, saved.pages.length, saved.pages[0]].join("|");
 
@@ -2017,6 +2328,7 @@
 
   function handleSettingChange() {
     updatePreview();
+    syncChapterPickerToBox();
     scheduleSave();
   }
 
@@ -2906,12 +3218,27 @@
     const chapters = Array.isArray(link?.chapters) ? link.chapters : [];
     const query = els.chapterFilter.value.trim().toLowerCase();
 
+    /* While the full list is still loading the picker stays hidden; don't fill it with a placeholder. */
+    if (!chapters.length && els.chapterPicker.hidden) {
+      els.chapterSelect.replaceChildren();
+      els.chapterPickerCount.textContent = "";
+      return;
+    }
+
+    const tokens = query
+      .split(/\s+/)
+      .map((token) => token.replace(/^#+/, ""))
+      .filter(Boolean);
+
     els.chapterSelect.replaceChildren();
 
     let shown = 0;
     chapters.forEach((item, index) => {
       const label = item.label || `Chapter ${item.number}`;
-      if (query && !label.toLowerCase().includes(query) && !String(item.number ?? "").includes(query)) return;
+      const number = Number.isFinite(item.number) ? String(item.number) : "";
+      const haystack = `${label.toLowerCase()}${number ? ` ${number} ch${number} chapter ${number}` : ""}`;
+
+      if (tokens.length && !tokens.every((token) => haystack.includes(token))) return;
 
       const option = document.createElement("option");
       option.value = String(index);
@@ -2954,6 +3281,42 @@
     els.chapterPicker.hidden = false;
     els.chapterPickerLabel.textContent = state.link.seriesName || "Chapters";
     filterChapterOptions();
+  }
+
+  /* Keep the picker in step when the chapter number box is edited. */
+  function syncChapterPickerToBox() {
+    const link = state.link;
+    const chapters = Array.isArray(link?.chapters) ? link.chapters : [];
+    if (!chapters.length) return;
+
+    const raw = els.chapterBox.value.trim();
+    if (!raw) return;
+
+    const number = parseFloat(raw);
+    if (!Number.isFinite(number)) return;
+
+    const index = chapters.findIndex((item) => item.number === number);
+    if (index < 0) return;
+
+    link.chapterIndex = index;
+    link.chapterNumber = chapters[index].number;
+    link.chapterUrl = chapters[index].url || link.chapterUrl;
+    link.chapterLabel = chapters[index].label || link.chapterLabel;
+
+    if (els.chapterPicker.hidden) return;
+
+    const value = String(index);
+    const hasOption = () => [...els.chapterSelect.options].some((option) => option.value === value);
+
+    if (!hasOption() && els.chapterFilter.value.trim()) {
+      els.chapterFilter.value = "";
+      filterChapterOptions();
+    }
+
+    if (hasOption()) {
+      els.chapterSelect.value = value;
+      els.chapterSelect.title = chapters[index].label || "";
+    }
   }
 
   function startChapterListLoad(seriesUrl) {
@@ -3073,6 +3436,7 @@
           link.chapterNumber = current.number ?? link.chapterNumber;
         }
         updated = true;
+        rememberChapterList();
 
         if (!deferPicker) renderChapterPicker();
       } catch {
@@ -3210,10 +3574,8 @@
     };
 
     renderChapterPicker();
-    if (seriesUrl && !fullList) {
-      hideChapterPicker();
-      startChapterListLoad(seriesUrl);
-    }
+    rememberChapterList();
+    if (seriesUrl && !fullList) startChapterListLoad(seriesUrl);
 
     return loadPages(!append);
   }
@@ -3424,12 +3786,15 @@
       if (fullList) {
         renderChapterPicker();
       } else if (seriesUrl) {
-        /* Pages first: show them now; the picker appears once the full list arrives. */
-        hideChapterPicker();
+        /* Pages first: show the chapters we already know, then fill in the full list. */
+        renderChapterPicker();
         startChapterListLoad(seriesUrl);
       } else {
         renderChapterPicker();
       }
+
+      rememberChapterList();
+      rememberLastSeries();
 
       setStatus(`Loaded ${meta.pages.length} page(s) · ${meta.chapterLabel}`, "status-ok", 4000);
       if (!append) window.scrollTo({ top: 0, behavior: "smooth" });
@@ -3542,7 +3907,8 @@
       };
 
       /* Pages first: open the newest chapter now; the full list fills the picker in the background. */
-      hideChapterPicker();
+      renderChapterPicker();
+      rememberChapterList();
       const link = state.link;
       if (!link?.chapters?.length) throw new Error("no chapters were found on that series page");
 
@@ -4848,8 +5214,9 @@
         .getSavedSettings();
     }
 
-    /* Reopen the last chapter and jump back to the page that was on screen. */
-    restoreSession();
+    /* Reopen the last chapter and jump back to the page that was on screen.
+       If that progress is gone, still bring back the chapter picker for the last series. */
+    if (!restoreSession()) restoreLastSeriesPicker();
   }
 
   /* group controls */
@@ -4888,6 +5255,15 @@
   });
 
   els.chapterFilter.addEventListener("input", filterChapterOptions);
+
+  els.chapterFilter.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+
+    const index = parseInt(els.chapterSelect.value, 10);
+    const item = state.link?.chapters?.[index];
+    if (Number.isInteger(index) && item) void openChapterItem(item, index);
+  });
 
   els.chapterSelect.addEventListener("change", () => {
     const index = parseInt(els.chapterSelect.value, 10);
