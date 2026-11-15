@@ -1282,6 +1282,10 @@
 
   const $ = (id) => document.getElementById(id);
   const STORAGE_KEY = "appsScriptMangaReader";
+  const PROGRESS_KEY = "appsScriptMangaReader.progress";
+  const PROGRESS_MAX_PAGES = 300;
+  const PROGRESS_MAX_GROUPS = 6;
+  const PROGRESS_SAVE_DELAY = 700;
   const SETTINGS_VERSION = 2;
   const PAGE_CONCURRENCY = 6;
   const CHAPTER_CONCURRENCY = 4;
@@ -1462,7 +1466,9 @@
     searchAltAbortB: null,
     listAbort: null,
     fullListBusy: "",
-    fullListPending: null
+    fullListPending: null,
+    progressTimer: null,
+    progressSig: ""
   };
 
   const probeImages = new Set();
@@ -1559,6 +1565,214 @@
     } catch {
       setStatus("Could not save settings in this browser.", "status-bad", 4000);
     }
+  }
+
+  /* ---------- reading progress (chapter, loaded pages, position) ---------- */
+
+  function readProgressMap() {
+    try {
+      const raw = localStorage.getItem(PROGRESS_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      return parsed;
+    } catch {
+      return {};
+    }
+  }
+
+  function writeProgressMap(map) {
+    try {
+      localStorage.setItem(PROGRESS_KEY, JSON.stringify(map));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function sanitizeProgress(raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+
+    const pages = Array.isArray(raw.pages)
+      ? raw.pages.filter((url) => typeof url === "string" && /^https?:\/\//i.test(url)).slice(0, PROGRESS_MAX_PAGES)
+      : [];
+    if (!pages.length) return null;
+
+    const codes = Array.isArray(raw.codes)
+      ? raw.codes.slice(0, pages.length).map((code) => cleanText(code, 16))
+      : [];
+
+    const index = Math.max(0, Math.min(pages.length - 1, parseInt(raw.index, 10) || 0));
+
+    return {
+      group: cleanText(raw.group, 80),
+      chapter: cleanText(raw.chapter, 40),
+      label: cleanText(raw.label, 40),
+      index,
+      pages,
+      codes,
+      at: Number(raw.at) || 0
+    };
+  }
+
+  function currentPageIndex(wraps = [...els.pages.querySelectorAll(".page-wrap")]) {
+    if (!wraps.length) return 0;
+
+    const middle = window.innerHeight / 2;
+    let best = 0;
+    let bestDistance = Infinity;
+
+    wraps.forEach((wrap, i) => {
+      const rect = wrap.getBoundingClientRect();
+      const distance = Math.abs((rect.top + rect.bottom) / 2 - middle);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = i;
+      }
+    });
+
+    return best;
+  }
+
+  function captureProgress() {
+    const wraps = [...els.pages.querySelectorAll(".page-wrap")];
+    if (!wraps.length) return null;
+
+    const pages = [];
+    const codes = [];
+
+    wraps.forEach((wrap) => {
+      const img = wrap.querySelector("img");
+      const url = img && img.getAttribute("src");
+      if (!url || !/^https?:\/\//i.test(url)) return;
+      pages.push(url);
+      codes.push(wrap.dataset.page || "");
+    });
+
+    if (!pages.length) return null;
+
+    return {
+      group: state.activeGroup,
+      chapter: els.chapterBox.value,
+      label: chapterCode(),
+      index: Math.min(currentPageIndex(wraps), pages.length - 1),
+      pages,
+      codes,
+      at: Date.now()
+    };
+  }
+
+  function saveProgress(force = false) {
+    const data = captureProgress();
+    if (!data) return;
+
+    const sig = [data.group, data.chapter, data.index, data.pages.length, data.pages[0]].join("|");
+    if (!force && sig === state.progressSig) return;
+    state.progressSig = sig;
+
+    const map = readProgressMap();
+    map[data.group] = data;
+
+    const keep = Object.keys(map)
+      .sort((a, b) => (Number(map[b]?.at) || 0) - (Number(map[a]?.at) || 0))
+      .slice(0, PROGRESS_MAX_GROUPS);
+
+    const trimmed = {};
+    for (const name of keep) trimmed[name] = map[name];
+    writeProgressMap(trimmed);
+  }
+
+  function scheduleProgressSave() {
+    if (state.progressTimer) return;
+    state.progressTimer = setTimeout(() => {
+      state.progressTimer = null;
+      saveProgress();
+    }, PROGRESS_SAVE_DELAY);
+  }
+
+  function clearProgress() {
+    state.progressSig = "";
+    const group = state.activeGroup;
+    if (!group) return;
+
+    const map = readProgressMap();
+    if (!(group in map)) return;
+    delete map[group];
+    writeProgressMap(map);
+  }
+
+  function scrollToRestoredPage(saved) {
+    const wraps = [...els.pages.querySelectorAll(".page-wrap")];
+    const target = wraps[saved.index];
+    if (!target) return;
+
+    /* Images above the target decide its offset, so load those first. */
+    const above = wraps.slice(0, saved.index + 1);
+    above.forEach((wrap) => {
+      const img = wrap.querySelector("img");
+      if (img) img.loading = "eager";
+    });
+
+    /* Page heights change as images decode, and a hidden iframe cannot scroll
+       at all, so keep re-aligning until the target sticks or the user moves. */
+    let stopped = false;
+
+    const stop = () => {
+      stopped = true;
+    };
+
+    window.addEventListener("wheel", stop, { once: true, passive: true });
+    window.addEventListener("touchstart", stop, { once: true, passive: true });
+    window.addEventListener("keydown", stop, { once: true });
+    setTimeout(stop, 8000);
+
+    const align = () => {
+      if (stopped) return;
+      const top = Math.max(0, target.getBoundingClientRect().top + window.scrollY - 4);
+      window.scrollTo(0, top);
+      updateHudPosition();
+    };
+
+    [0, 120, 300, 600, 1000, 1800, 3000].forEach((delay) => {
+      if (delay === 0) requestAnimationFrame(align);
+      else setTimeout(align, delay);
+    });
+
+    above.forEach((wrap) => {
+      const img = wrap.querySelector("img");
+      if (img) img.addEventListener("load", align, { once: true });
+    });
+  }
+
+  function restoreSession() {
+    const saved = sanitizeProgress(readProgressMap()[state.activeGroup]);
+    if (!saved) return false;
+
+    els.chapterBox.value = saved.chapter || els.chapterBox.value;
+    if (saved.codes[saved.index]) els.pageBox.value = saved.codes[saved.index];
+    updatePreview();
+
+    els.pages.replaceChildren();
+    saved.pages.forEach((url, i) => {
+      addPage(
+        { url, sourceIndex: 1 },
+        {
+          chapter: saved.chapter || "1",
+          pageCode: saved.codes[i] || padNumberString(String(i + 1), els.pagePad.value),
+          exact: true
+        }
+      );
+    });
+
+    updateHud();
+    scrollToRestoredPage(saved);
+
+    state.progressSig = [saved.group, saved.chapter, saved.index, saved.pages.length, saved.pages[0]].join("|");
+
+    const label = saved.label || chapterCode(saved.chapter);
+    const page = saved.codes[saved.index] || saved.index + 1;
+    setStatus(`Resumed chapter ${label} — page ${page}.`, "status-ok", 5200);
+    return true;
   }
 
   function saveServer(data) {
@@ -4104,6 +4318,7 @@
   function clearReader() {
     stopLoading("", "");
     els.pages.replaceChildren();
+    clearProgress();
     showEmptyMessage(
       "Cleared.",
       "Paste a WeebCentral link in the menu and tap Open / Search to start a chapter."
@@ -4310,6 +4525,7 @@
     els.readingHud.hidden = false;
     els.hudPages.textContent = `${wraps.length} page${wraps.length === 1 ? "" : "s"}`;
     updateHudPosition();
+    scheduleProgressSave();
   }
 
   function updateHudPosition() {
@@ -4631,6 +4847,9 @@
         .withFailureHandler(() => {})
         .getSavedSettings();
     }
+
+    /* Reopen the last chapter and jump back to the page that was on screen. */
+    restoreSession();
   }
 
   /* group controls */
@@ -4827,7 +5046,10 @@
     }
   });
 
-  window.addEventListener("scroll", scheduleHudUpdate, { passive: true });
+  window.addEventListener("scroll", () => {
+    scheduleHudUpdate();
+    scheduleProgressSave();
+  }, { passive: true });
   window.addEventListener("resize", () => {
     updatePanelMetrics();
     positionPanelTab();
@@ -4848,9 +5070,15 @@
     panelObserver.observe(els.panel);
   }
 
-  window.addEventListener("beforeunload", flushSave);
+  window.addEventListener("beforeunload", () => {
+    flushSave();
+    saveProgress(true);
+  });
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") flushSave();
+    if (document.visibilityState === "hidden") {
+      flushSave();
+      saveProgress(true);
+    }
   });
 
   init();
