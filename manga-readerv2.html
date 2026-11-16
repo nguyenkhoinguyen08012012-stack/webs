@@ -597,6 +597,18 @@
       pointer-events: none;
     }
 
+    .page-badge .ch {
+      display: none;
+      color: #fbbf24;
+    }
+
+    /* Only spell out the chapter once several chapters share the screen. */
+    #pages.is-multi .page-badge .ch {
+      display: inline;
+      border-right: 1px solid rgba(255,255,255,.18);
+      padding-right: 5px;
+    }
+
     .page-badge .src {
       color: #67e8f9;
       border-left: 1px solid rgba(255,255,255,.18);
@@ -1040,6 +1052,19 @@
         <button id="hidePanelBtn" type="button">Hide Panel</button>
       </div>
 
+      <div class="chapter-picker offline-box">
+        <div class="chapter-picker-head">
+          <label>Offline chapters</label>
+          <span id="offlineStats" class="chapter-picker-count">Nothing saved yet</span>
+        </div>
+        <div class="row">
+          <button id="downloadAllBtn" class="good" type="button">Download all loaded chapters</button>
+          <button id="downloadChapterBtn" type="button">Download this chapter</button>
+          <button id="offlineClearBtn" class="danger" type="button">Clear offline</button>
+        </div>
+        <div class="chapter-picker-hint">Every chapter you open is saved on this device automatically, so it opens again without Wi-Fi. Download fills in any pages that were skipped.</div>
+      </div>
+
       <details id="advancedSettings" class="advanced">
         <summary>Source pattern &amp; scan settings</summary>
         <div class="advanced-body">
@@ -1285,6 +1310,19 @@
   const PROGRESS_KEY = "appsScriptMangaReader.progress";
   const LAST_SERIES_KEY = "appsScriptMangaReader.lastSeries";
   const LIST_CACHE_KEY = "appsScriptMangaReader.chapterLists";
+  const CHAPTER_CACHE_KEY = "appsScriptMangaReader.chapterPages";
+  const CHAPTER_CACHE_MAX = 400;
+  const CHAPTER_CACHE_TTL = 3 * 24 * 60 * 60 * 1000;
+  const OFFLINE_DB_NAME = "appsScriptMangaReader.offline";
+  const OFFLINE_DB_VERSION = 2;
+  const OFFLINE_STORE = "pages";
+  const OFFLINE_CHAPTER_STORE = "chapters";
+  const OFFLINE_INDEX_KEY = "appsScriptMangaReader.offlineIndex";
+  const OFFLINE_CHAPTERS_KEY = "appsScriptMangaReader.offlineChapters";
+  /* Whole chapters are kept; storage pressure, not these numbers, decides eviction. */
+  const OFFLINE_MAX_ITEMS = 20000;
+  const OFFLINE_MAX_BYTES = 8 * 1024 * 1024 * 1024;
+  const OFFLINE_QUOTA_TARGET = 0.85;
   const LIST_CACHE_MAX_SERIES = 3;
   const LIST_CACHE_MAX_CHAPTERS = 2000;
   const LIST_CACHE_TTL = 6 * 60 * 60 * 1000;
@@ -1323,6 +1361,10 @@
     chapterFilter: $("chapterFilter"),
     chapterSelect: $("chapterSelect"),
     chapterListBtn: $("chapterListBtn"),
+    offlineStats: $("offlineStats"),
+    downloadAllBtn: $("downloadAllBtn"),
+    downloadChapterBtn: $("downloadChapterBtn"),
+    offlineClearBtn: $("offlineClearBtn"),
     advancedSettings: $("advancedSettings"),
     base1: $("base1"),
     base2: $("base2"),
@@ -1473,7 +1515,8 @@
     fullListBusy: "",
     fullListPending: null,
     progressTimer: null,
-    progressSig: ""
+    progressSig: "",
+    offlineDownloading: false
   };
 
   const probeImages = new Set();
@@ -1762,24 +1805,841 @@
     return best;
   }
 
+  /* ---------- per-chapter page cache (instant Next / Previous) ---------- */
+
+  function readChapterPageCache() {
+    try {
+      const raw = localStorage.getItem(CHAPTER_CACHE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      return parsed;
+    } catch {
+      return {};
+    }
+  }
+
+  function writeChapterPageCache(cache) {
+    try {
+      localStorage.setItem(CHAPTER_CACHE_KEY, JSON.stringify(cache));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function cacheChapterPages({ chapterUrl, chapterLabel, chapterNumber, seriesUrl, seriesName, pages }) {
+    if (!chapterUrl || !Array.isArray(pages) || !pages.length) return;
+
+    const rows = pages
+      .map((page, index) => {
+        const url = typeof page?.url === "string" ? page.url : "";
+        if (!/^https?:\/\//i.test(url)) return null;
+        return [Number(page.page) || index + 1, url];
+      })
+      .filter(Boolean)
+      .slice(0, PROGRESS_MAX_PAGES);
+
+    if (!rows.length) return;
+
+    const cache = readChapterPageCache();
+    cache[chapterUrl] = {
+      at: Date.now(),
+      chapterLabel: cleanText(chapterLabel || "", 40),
+      chapterNumber: Number.isFinite(Number(chapterNumber)) ? Number(chapterNumber) : null,
+      seriesUrl: cleanText(seriesUrl || "", 500),
+      seriesName: cleanText(seriesName || "", 90),
+      pages: rows
+    };
+
+    /* Never drop a chapter that has pages saved for offline reading. */
+    const keys = Object.keys(cache);
+    const saved = keys.filter((key) => hasOfflineChapter(key));
+    const others = keys.filter((key) => !hasOfflineChapter(key));
+    const byAge = (a, b) => (Number(cache[b]?.at) || 0) - (Number(cache[a]?.at) || 0);
+    const keep = [...saved.sort(byAge), ...others.sort(byAge)].slice(0, CHAPTER_CACHE_MAX);
+
+    const trimmed = {};
+    for (const key of keep) trimmed[key] = cache[key];
+    writeChapterPageCache(trimmed);
+
+    /* The offline library keeps its own copy of the page list, so it survives cache aging. */
+    rememberOfflineChapter({
+      chapterUrl,
+      label: cache[chapterUrl]?.chapterLabel || chapterLabel || "",
+      number: cache[chapterUrl]?.chapterNumber ?? chapterNumber,
+      seriesUrl: cache[chapterUrl]?.seriesUrl || seriesUrl || "",
+      seriesName: cache[chapterUrl]?.seriesName || seriesName || "",
+      pages: rows
+    });
+  }
+
+  function cachedChapterPages(chapterUrl, { allowStale = navigator.onLine === false } = {}) {
+    if (!chapterUrl) return null;
+
+    const entry = readChapterPageCache()[chapterUrl];
+    if (!entry) return null;
+    if (!allowStale && Date.now() - (Number(entry.at) || 0) > CHAPTER_CACHE_TTL) return null;
+
+    const pages = (entry.pages || [])
+      .map((row) => (Array.isArray(row) ? { page: Number(row[0]) || 0, url: row[1] } : null))
+      .filter((page) => page && /^https?:\/\//i.test(page.url || ""));
+
+    if (!pages.length) return null;
+
+    return {
+      chapterLabel: entry.chapterLabel || "",
+      chapterNumber: Number.isFinite(entry.chapterNumber) ? entry.chapterNumber : null,
+      seriesUrl: entry.seriesUrl || "",
+      seriesName: entry.seriesName || "",
+      pages
+    };
+  }
+
+  /* ---------- offline page images (IndexedDB, so a reopen without Wi-Fi still reads) ---------- */
+
+  let offlineDbPromise = null;
+  let offlineQueue = Promise.resolve();
+  const offlineObjectUrls = new Map();
+  const offlineQueued = new Set();
+
+  function openOfflineDb() {
+    if (!("indexedDB" in window)) return Promise.resolve(null);
+
+    if (!offlineDbPromise) {
+      offlineDbPromise = new Promise((resolve) => {
+        let settled = false;
+        const done = (value) => {
+          if (settled) return;
+          settled = true;
+          resolve(value);
+        };
+
+        try {
+          const request = indexedDB.open(OFFLINE_DB_NAME, OFFLINE_DB_VERSION);
+          request.onupgradeneeded = () => {
+            const db = request.result;
+            if (!db.objectStoreNames.contains(OFFLINE_STORE)) {
+              db.createObjectStore(OFFLINE_STORE, { keyPath: "url" });
+            }
+            if (!db.objectStoreNames.contains(OFFLINE_CHAPTER_STORE)) {
+              db.createObjectStore(OFFLINE_CHAPTER_STORE, { keyPath: "chapterUrl" });
+            }
+          };
+          request.onsuccess = () => done(request.result);
+          request.onerror = () => done(null);
+          request.onblocked = () => done(null);
+        } catch {
+          done(null);
+        }
+      });
+    }
+
+    return offlineDbPromise;
+  }
+
+  function readOfflineIndex() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(OFFLINE_INDEX_KEY) || "[]");
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((entry) => entry && typeof entry.url === "string" && /^https?:\/\//i.test(entry.url));
+    } catch {
+      return [];
+    }
+  }
+
+  function writeOfflineIndex(list) {
+    try {
+      localStorage.setItem(OFFLINE_INDEX_KEY, JSON.stringify(list));
+    } catch {
+      /* The IndexedDB copy is what matters; the index only drives trimming. */
+    }
+  }
+
+  function trimOfflineIndex(list) {
+    const kept = [];
+    let total = 0;
+
+    for (const entry of list) {
+      if (kept.length >= OFFLINE_MAX_ITEMS) break;
+      const size = Math.max(0, Number(entry.size) || 0);
+      if (kept.length && total + size > OFFLINE_MAX_BYTES) break;
+      total += size;
+      kept.push(entry);
+    }
+
+    return kept;
+  }
+
+  function idbOfflineGet(url) {
+    return openOfflineDb().then((db) => {
+      if (!db) return null;
+      return new Promise((resolve) => {
+        try {
+          const tx = db.transaction(OFFLINE_STORE, "readonly");
+          const request = tx.objectStore(OFFLINE_STORE).get(url);
+          request.onsuccess = () => resolve(request.result || null);
+          request.onerror = () => resolve(null);
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+  }
+
+  function idbOfflinePut(record) {
+    return openOfflineDb().then((db) => {
+      if (!db) return false;
+      return new Promise((resolve) => {
+        try {
+          const tx = db.transaction(OFFLINE_STORE, "readwrite");
+          tx.objectStore(OFFLINE_STORE).put(record);
+          tx.oncomplete = () => resolve(true);
+          tx.onerror = () => resolve(false);
+          tx.onabort = () => resolve(false);
+        } catch {
+          resolve(false);
+        }
+      });
+    });
+  }
+
+  function idbOfflineDelete(urls) {
+    if (!urls.length) return Promise.resolve();
+    return openOfflineDb().then((db) => {
+      if (!db) return;
+      return new Promise((resolve) => {
+        try {
+          const tx = db.transaction(OFFLINE_STORE, "readwrite");
+          const store = tx.objectStore(OFFLINE_STORE);
+          urls.forEach((url) => store.delete(url));
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+          tx.onabort = () => resolve();
+        } catch {
+          resolve();
+        }
+      });
+    });
+  }
+
+  /* ---------- offline chapter library (every loaded chapter, not just the last) ---------- */
+
+  function idbChapterGet(chapterUrl) {
+    return openOfflineDb().then((db) => {
+      if (!db) return null;
+      return new Promise((resolve) => {
+        try {
+          const tx = db.transaction(OFFLINE_CHAPTER_STORE, "readonly");
+          const request = tx.objectStore(OFFLINE_CHAPTER_STORE).get(chapterUrl);
+          request.onsuccess = () => resolve(request.result || null);
+          request.onerror = () => resolve(null);
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+  }
+
+  function idbChapterPut(record) {
+    return openOfflineDb().then((db) => {
+      if (!db) return false;
+      return new Promise((resolve) => {
+        try {
+          const tx = db.transaction(OFFLINE_CHAPTER_STORE, "readwrite");
+          tx.objectStore(OFFLINE_CHAPTER_STORE).put(record);
+          tx.oncomplete = () => resolve(true);
+          tx.onerror = () => resolve(false);
+          tx.onabort = () => resolve(false);
+        } catch {
+          resolve(false);
+        }
+      });
+    });
+  }
+
+  function idbChapterDelete(chapterUrl) {
+    return openOfflineDb().then((db) => {
+      if (!db) return;
+      return new Promise((resolve) => {
+        try {
+          const tx = db.transaction(OFFLINE_CHAPTER_STORE, "readwrite");
+          tx.objectStore(OFFLINE_CHAPTER_STORE).delete(chapterUrl);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+          tx.onabort = () => resolve();
+        } catch {
+          resolve();
+        }
+      });
+    });
+  }
+
+  function idbChapterGetAll() {
+    return openOfflineDb().then((db) => {
+      if (!db) return [];
+      return new Promise((resolve) => {
+        try {
+          const tx = db.transaction(OFFLINE_CHAPTER_STORE, "readonly");
+          const request = tx.objectStore(OFFLINE_CHAPTER_STORE).getAll();
+          request.onsuccess = () => resolve(Array.isArray(request.result) ? request.result : []);
+          request.onerror = () => resolve([]);
+        } catch {
+          resolve([]);
+        }
+      });
+    });
+  }
+
+  function readOfflineChapterMap() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(OFFLINE_CHAPTERS_KEY) || "{}");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      return parsed;
+    } catch {
+      return {};
+    }
+  }
+
+  function writeOfflineChapterMap(map) {
+    try {
+      localStorage.setItem(OFFLINE_CHAPTERS_KEY, JSON.stringify(map));
+    } catch {
+      /* The library copy in IndexedDB still works; markers only need the map. */
+    }
+  }
+
+  function offlineStoredPages(urls) {
+    const have = new Set(readOfflineIndex().map((entry) => entry.url));
+    return urls.reduce((count, url) => count + (have.has(url) ? 1 : 0), 0);
+  }
+
+  /* True once every page of the chapter sits in IndexedDB. */
+  function hasOfflineChapter(chapterUrl) {
+    if (!chapterUrl) return false;
+    const entry = readOfflineChapterMap()[chapterUrl];
+    return Boolean(entry && entry.count > 0 && Number(entry.stored) >= Number(entry.count));
+  }
+
+  function offlineChapterPartial(chapterUrl) {
+    const entry = readOfflineChapterMap()[chapterUrl];
+    return Boolean(entry && Number(entry.stored) > 0);
+  }
+
+  function countOfflineChapters() {
+    return Object.values(readOfflineChapterMap())
+      .filter((entry) => entry && entry.count > 0 && Number(entry.stored) >= Number(entry.count))
+      .length;
+  }
+
+  /* Every chapter that was ever opened keeps its page list here, so a reopen without
+     Wi-Fi can rebuild it even when the fast chapter cache has aged out. */
+  async function rememberOfflineChapter({ chapterUrl, label, number, seriesUrl, seriesName, pages }) {
+    if (!chapterUrl || !Array.isArray(pages) || !pages.length) return;
+
+    const rows = pages
+      .map((page, index) => {
+        const url = Array.isArray(page) ? page[1] : page?.url;
+        const code = Array.isArray(page) ? page[0] : page?.page;
+        if (!/^https?:\/\//i.test(url || "")) return null;
+        return [Number(code) || index + 1, url];
+      })
+      .filter(Boolean)
+      .slice(0, PROGRESS_MAX_PAGES);
+
+    if (!rows.length) return;
+
+    const record = {
+      chapterUrl,
+      label: cleanText(label || "", 60),
+      number: Number.isFinite(Number(number)) ? Number(number) : null,
+      seriesUrl: cleanText(seriesUrl || "", 500),
+      seriesName: cleanText(seriesName || "", 90),
+      pages: rows,
+      at: Date.now()
+    };
+
+    const saved = await idbChapterPut(record);
+    if (!saved) return;
+
+    const map = readOfflineChapterMap();
+    map[chapterUrl] = {
+      label: record.label,
+      number: record.number,
+      count: rows.length,
+      stored: offlineStoredPages(rows.map((row) => row[1])),
+      at: record.at
+    };
+    writeOfflineChapterMap(map);
+
+    renderOfflineStats();
+    filterChapterOptions();
+  }
+
+  async function refreshOfflineChapterStatus(chapterUrl) {
+    if (!chapterUrl) return;
+
+    const map = readOfflineChapterMap();
+    const entry = map[chapterUrl];
+    if (!entry) return;
+
+    const record = await idbChapterGet(chapterUrl);
+    const urls = (record?.pages || []).map((row) => row[1]);
+    entry.stored = urls.length ? offlineStoredPages(urls) : 0;
+    entry.count = urls.length || entry.count;
+    writeOfflineChapterMap(map);
+
+    renderOfflineStats();
+    filterChapterOptions();
+  }
+
+  async function readOfflineChapterPages(chapterUrl) {
+    if (!chapterUrl) return null;
+
+    const record = await idbChapterGet(chapterUrl);
+    if (!record) return null;
+
+    const pages = (record.pages || [])
+      .map((row) => (Array.isArray(row) ? { page: Number(row[0]) || 0, url: row[1] } : null))
+      .filter((page) => page && /^https?:\/\//i.test(page.url || ""));
+
+    if (!pages.length) return null;
+
+    return {
+      chapterUrl,
+      chapterLabel: record.label || "",
+      chapterNumber: Number.isFinite(record.number) ? record.number : null,
+      seriesUrl: record.seriesUrl || "",
+      seriesName: record.seriesName || "",
+      pages
+    };
+  }
+
+  async function findOfflineChapter(number, seriesUrl = "") {
+    if (!Number.isFinite(Number(number))) return null;
+
+    const records = await idbChapterGetAll();
+    const match = records.find((record) => {
+      if (!Number.isFinite(Number(record?.number)) || Number(record.number) !== Number(number)) return false;
+      if (seriesUrl && record.seriesUrl && record.seriesUrl !== seriesUrl) return false;
+      return Array.isArray(record.pages) && record.pages.length > 0;
+    });
+
+    if (!match) return null;
+
+    return {
+      chapterUrl: match.chapterUrl,
+      chapterLabel: match.label || "",
+      chapterNumber: Number(match.number),
+      seriesUrl: match.seriesUrl || "",
+      seriesName: match.seriesName || "",
+      pages: match.pages.map((row) => ({ page: Number(row[0]) || 0, url: row[1] }))
+    };
+  }
+
+  function revokeOfflineUrl(url) {
+    const objectUrl = offlineObjectUrls.get(url);
+    if (!objectUrl) return;
+    URL.revokeObjectURL(objectUrl);
+    offlineObjectUrls.delete(url);
+  }
+
+  async function deleteOfflineChapter(chapterUrl) {
+    const record = await idbChapterGet(chapterUrl);
+    const urls = (record?.pages || []).map((row) => row[1]).filter(Boolean);
+
+    if (urls.length) {
+      await idbOfflineDelete(urls);
+      const drop = new Set(urls);
+      writeOfflineIndex(readOfflineIndex().filter((entry) => !drop.has(entry.url)));
+      urls.forEach(revokeOfflineUrl);
+    }
+
+    await idbChapterDelete(chapterUrl);
+
+    const map = readOfflineChapterMap();
+    if (map[chapterUrl]) {
+      delete map[chapterUrl];
+      writeOfflineChapterMap(map);
+    }
+
+    renderOfflineStats();
+    filterChapterOptions();
+  }
+
+  async function clearOfflineLibrary() {
+    const records = await idbChapterGetAll();
+    for (const record of records) await deleteOfflineChapter(record.chapterUrl);
+
+    /* Any image saved without a chapter manifest goes too. */
+    const rest = readOfflineIndex();
+    if (rest.length) {
+      await idbOfflineDelete(rest.map((entry) => entry.url));
+      rest.forEach((entry) => revokeOfflineUrl(entry.url));
+      writeOfflineIndex([]);
+    }
+
+    writeOfflineChapterMap({});
+    renderOfflineStats();
+    filterChapterOptions();
+  }
+
+  /* Free space by dropping the oldest whole chapter, never a half chapter. */
+  async function enforceOfflineBudget() {
+    try {
+      const estimate = await navigator.storage?.estimate?.();
+      if (!estimate || !Number.isFinite(estimate.quota)) return;
+
+      const limit = estimate.quota * OFFLINE_QUOTA_TARGET;
+      if ((Number(estimate.usage) || 0) < limit) return;
+
+      const map = readOfflineChapterMap();
+      const oldest = Object.keys(map).sort((a, b) => (Number(map[a]?.at) || 0) - (Number(map[b]?.at) || 0));
+
+      for (const chapterUrl of oldest) {
+        await deleteOfflineChapter(chapterUrl);
+        const next = await navigator.storage.estimate();
+        if ((Number(next?.usage) || 0) < (Number(next?.quota) || Infinity) * 0.75) return;
+      }
+    } catch {
+      /* Storage pressure is best-effort; keeping the data matters more. */
+    }
+  }
+
+  function formatStorage(bytes) {
+    const value = Math.max(0, Number(bytes) || 0);
+    if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
+    if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+
+  function renderOfflineStats() {
+    if (!els.offlineStats) return;
+
+    const index = readOfflineIndex();
+    const bytes = index.reduce((total, entry) => total + (Number(entry.size) || 0), 0);
+    const chapters = countOfflineChapters();
+
+    els.offlineStats.textContent = index.length
+      ? `${chapters} chapter${chapters === 1 ? "" : "s"} · ${index.length} page${index.length === 1 ? "" : "s"} · ${formatStorage(bytes)}`
+      : "Nothing saved yet";
+  }
+
+  /* Store every page of a chapter that is not on the device yet. */
+  async function ensureChapterImages(record, onProgress) {
+    const urls = (record?.pages || []).map((row) => row[1]).filter(Boolean);
+    let done = 0;
+
+    for (const url of urls) {
+      await storeOfflineImage(url);
+      done += 1;
+      onProgress?.(done, urls.length);
+    }
+
+    await refreshOfflineChapterStatus(record?.chapterUrl || "");
+    return done;
+  }
+
+  function currentChapterManifest() {
+    const chapterUrl = state.link?.chapterUrl || "";
+    if (!chapterUrl) return null;
+
+    const chapter = els.chapterBox.value.trim();
+    const rows = [];
+
+    els.pages.querySelectorAll(".page-wrap").forEach((wrap) => {
+      if (wrap.dataset.chapter !== chapter) return;
+      const img = wrap.querySelector("img");
+      const url = img?.dataset.remote || (/^https?:\/\//i.test(img?.src || "") ? img.src : "");
+      if (!/^https?:\/\//i.test(url || "")) return;
+      rows.push([Number(wrap.dataset.page) || rows.length + 1, url]);
+    });
+
+    if (!rows.length) return null;
+
+    return {
+      chapterUrl,
+      label: state.link?.chapterLabel || "",
+      number: state.link?.chapterNumber,
+      seriesUrl: state.link?.seriesUrl || "",
+      seriesName: state.link?.seriesName || "",
+      pages: rows
+    };
+  }
+
+  async function downloadChapterOffline(chapterUrl = state.link?.chapterUrl || "") {
+    if (!chapterUrl) {
+      setStatus("Open a chapter first.", "status-warn", 3000);
+      return;
+    }
+    if (navigator.onLine === false) {
+      setStatus("Connect to the internet to download chapters.", "status-bad", 4000);
+      return;
+    }
+    if (state.offlineDownloading) return;
+
+    let record = await idbChapterGet(chapterUrl);
+    if (!record) record = currentChapterManifest();
+    if (!record) {
+      setStatus("No pages to download for this chapter.", "status-warn", 3000);
+      return;
+    }
+
+    await rememberOfflineChapter(record);
+    state.offlineDownloading = true;
+    els.downloadChapterBtn.disabled = true;
+    els.downloadAllBtn.disabled = true;
+
+    try {
+      await ensureChapterImages(record, (done, total) => {
+        if (done % 3 === 0 || done === total) {
+          setStatus(`Saving offline · page ${done}/${total}…`, "status-warn");
+        }
+      });
+
+      const complete = hasOfflineChapter(chapterUrl);
+      setStatus(
+        complete
+          ? `Saved ${record.label || "this chapter"} for offline reading.`
+          : "Saved most pages. Tap Download this chapter again to finish.",
+        complete ? "status-ok" : "status-warn",
+        4500
+      );
+    } finally {
+      state.offlineDownloading = false;
+      els.downloadChapterBtn.disabled = false;
+      els.downloadAllBtn.disabled = false;
+      renderOfflineStats();
+    }
+  }
+
+  async function downloadAllLoadedChapters() {
+    if (navigator.onLine === false) {
+      setStatus("Connect to the internet to download chapters.", "status-bad", 4000);
+      return;
+    }
+    if (state.offlineDownloading) return;
+
+    const records = await idbChapterGetAll();
+    const current = currentChapterManifest();
+
+    if (current && !records.some((record) => record.chapterUrl === current.chapterUrl)) {
+      await rememberOfflineChapter(current);
+      records.push(current);
+    }
+
+    if (!records.length) {
+      setStatus("No loaded chapters to download yet.", "status-warn", 3500);
+      return;
+    }
+
+    state.offlineDownloading = true;
+    els.downloadChapterBtn.disabled = true;
+    els.downloadAllBtn.disabled = true;
+
+    let saved = 0;
+
+    try {
+      for (let i = 0; i < records.length; i++) {
+        const record = records[i];
+        const label = record.label || (Number.isFinite(record.number) ? `Chapter ${record.number}` : `Chapter ${i + 1}`);
+        setStatus(`Downloading ${i + 1}/${records.length} · ${label}…`, "status-warn");
+
+        await ensureChapterImages(record, (done, total) => {
+          if (done % 4 === 0 || done === total) {
+            setStatus(`Downloading ${i + 1}/${records.length} · ${label} · page ${done}/${total}…`, "status-warn");
+          }
+        });
+
+        saved += 1;
+        renderOfflineStats();
+      }
+
+      await enforceOfflineBudget();
+      setStatus(`Downloaded ${saved} chapter${saved === 1 ? "" : "s"} for offline reading.`, "status-ok", 6000);
+    } finally {
+      state.offlineDownloading = false;
+      els.downloadChapterBtn.disabled = false;
+      els.downloadAllBtn.disabled = false;
+      renderOfflineStats();
+      filterChapterOptions();
+    }
+  }
+
+  /* Chapters loaded before the offline library existed become downloadable too. */
+  async function migrateOfflineLibrary() {
+    const cache = readChapterPageCache();
+
+    for (const [chapterUrl, entry] of Object.entries(cache)) {
+      if (!entry || !Array.isArray(entry.pages) || !entry.pages.length) continue;
+      if (await idbChapterGet(chapterUrl)) continue;
+
+      await rememberOfflineChapter({
+        chapterUrl,
+        label: entry.chapterLabel,
+        number: entry.chapterNumber,
+        seriesUrl: entry.seriesUrl,
+        seriesName: entry.seriesName,
+        pages: entry.pages
+      });
+    }
+  }
+
+  async function readOfflineImage(url) {
+    if (!url || !/^https?:\/\//i.test(url)) return null;
+    if (offlineObjectUrls.has(url)) return offlineObjectUrls.get(url);
+
+    const record = await idbOfflineGet(url);
+    if (!record || !record.blob || !record.blob.size) return null;
+
+    const objectUrl = URL.createObjectURL(record.blob);
+    offlineObjectUrls.set(url, objectUrl);
+    return objectUrl;
+  }
+
+  async function storeOfflineImage(url) {
+    if (!url || !/^https?:\/\//i.test(url) || offlineObjectUrls.has(url)) return;
+
+    const index = readOfflineIndex();
+    if (index.some((entry) => entry.url === url)) return;
+
+    let blob = null;
+    try {
+      const response = await fetch(url, { cache: "force-cache" });
+      if (!response.ok) return;
+      blob = await response.blob();
+    } catch {
+      return;
+    }
+
+    if (!blob || !blob.size || !/^image\//i.test(blob.type || "")) return;
+
+    const stored = await idbOfflinePut({ url, blob, at: Date.now(), size: blob.size });
+    if (!stored) return;
+
+    const next = [
+      { url, at: Date.now(), size: blob.size },
+      ...readOfflineIndex().filter((entry) => entry.url !== url)
+    ];
+    const kept = trimOfflineIndex(next);
+    writeOfflineIndex(kept);
+
+    const removed = next.filter((entry) => !kept.some((keep) => keep.url === entry.url));
+    if (removed.length) {
+      await idbOfflineDelete(removed.map((entry) => entry.url));
+      removed.forEach((entry) => {
+        const objectUrl = offlineObjectUrls.get(entry.url);
+        if (!objectUrl) return;
+        URL.revokeObjectURL(objectUrl);
+        offlineObjectUrls.delete(entry.url);
+      });
+    }
+
+    /* Storage quota (not a fixed count) decides when whole chapters are evicted. */
+    if (kept.length % 20 === 0) void enforceOfflineBudget();
+  }
+
+  function queueOfflineImage(url) {
+    if (!url || !/^https?:\/\//i.test(url) || offlineQueued.has(url)) return offlineQueue;
+    offlineQueued.add(url);
+    offlineQueue = offlineQueue
+      .then(() => storeOfflineImage(url))
+      .catch(() => {})
+      .finally(() => offlineQueued.delete(url));
+    return offlineQueue;
+  }
+
+  /* Save every page of the chapter on screen, including the ones still lazy. */
+  function queueChapterOfflinePages() {
+    const chapter = els.chapterBox.value.trim();
+    const chapterUrl = state.link?.chapterUrl || "";
+    if (!chapter) return offlineQueue;
+
+    els.pages.querySelectorAll(".page-wrap").forEach((wrap) => {
+      if (wrap.dataset.chapter !== chapter) return;
+      const img = wrap.querySelector("img");
+      if (!img || img.dataset.offline === "1") return;
+      queueOfflineImage(img.dataset.remote || "");
+    });
+
+    if (chapterUrl) {
+      offlineQueue = offlineQueue
+        .then(() => refreshOfflineChapterStatus(chapterUrl))
+        .catch(() => {});
+    }
+
+    return offlineQueue;
+  }
+
+  /* Older saves kept a single chapter label for the whole scrollback, so pages from an
+     appended chapter looked like the newest one. Recover per-page labels from the image
+     filenames when a run of pages shares a chapter number. */
+  function inferPageChapters(pages, codes, chapter) {
+    const labels = new Array(pages.length).fill("");
+    if (!chapter || pages.length < 2) return labels;
+
+    const numberKey = (value) => String(value).replace(/^0+(?=\d)/, "");
+    const candidates = pages.map((url, i) => {
+      const file = String(url).split(/[?#]/)[0].split("/").pop() || "";
+      const numbers = file.match(/\d{1,6}(?:\.\d+)?/g) || [];
+      const code = numberKey(codes[i] || "");
+      const rest = numbers.filter((value) => numberKey(value) !== code);
+      return rest.length === 1 ? rest[0] : "";
+    });
+
+    const runs = [];
+    candidates.forEach((value, i) => {
+      const last = runs[runs.length - 1];
+      if (last && last.value === value) last.end = i;
+      else runs.push({ value, start: i, end: i });
+    });
+
+    const trusted = runs.filter((run) => run.value && run.end - run.start + 1 >= 2);
+    if (!trusted.length) return labels;
+
+    const newest = trusted[trusted.length - 1].value;
+    if (parseFloat(newest) !== parseFloat(chapter)) return labels;
+
+    trusted.forEach((run) => {
+      for (let i = run.start; i <= run.end; i++) labels[i] = run.value;
+    });
+
+    return labels;
+  }
+
   function sanitizeProgress(raw) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
 
-    const pages = Array.isArray(raw.pages)
-      ? raw.pages.filter((url) => typeof url === "string" && /^https?:\/\//i.test(url)).slice(0, PROGRESS_MAX_PAGES)
-      : [];
-    if (!pages.length) return null;
+    const rawPages = Array.isArray(raw.pages) ? raw.pages : [];
+    const rawCodes = Array.isArray(raw.codes) ? raw.codes : [];
+    const rawChapters = Array.isArray(raw.chapters) ? raw.chapters : null;
+    const chapter = cleanText(raw.chapter, 40);
 
-    const codes = Array.isArray(raw.codes)
-      ? raw.codes.slice(0, pages.length).map((code) => cleanText(code, 16))
-      : [];
+    /* Keep pages, codes and chapter labels aligned before trimming. */
+    const rows = [];
+    rawPages.forEach((url, i) => {
+      if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return;
+      rows.push({ url, code: cleanText(rawCodes[i], 16), chapter: cleanText(rawChapters?.[i], 40) });
+    });
+    if (!rows.length) return null;
 
-    const index = Math.max(0, Math.min(pages.length - 1, parseInt(raw.index, 10) || 0));
+    /* Overflow keeps the newest pages (reading moves forward), not the oldest. */
+    const dropped = Math.max(0, rows.length - PROGRESS_MAX_PAGES);
+    const kept = rows.slice(dropped);
+
+    const pages = kept.map((row) => row.url);
+    const codes = kept.map((row) => row.code);
+    const chapters = rawChapters
+      ? kept.map((row) => row.chapter)
+      : inferPageChapters(rows.map((row) => row.url), rows.map((row) => row.code), chapter).slice(dropped);
+
+    const index = Math.max(0, Math.min(pages.length - 1, (parseInt(raw.index, 10) || 0) - dropped));
 
     return {
       group: cleanText(raw.group, 80),
-      chapter: cleanText(raw.chapter, 40),
+      chapter,
       label: cleanText(raw.label, 40),
+      chapters,
       seriesUrl: /^https?:\/\//i.test(raw.seriesUrl || "") ? cleanText(raw.seriesUrl, 500) : "",
       seriesName: cleanText(raw.seriesName, 90),
       chapterUrl: /^https?:\/\//i.test(raw.chapterUrl || "") ? cleanText(raw.chapterUrl, 500) : "",
@@ -1815,13 +2675,19 @@
 
     const pages = [];
     const codes = [];
+    const chapters = [];
 
     wraps.forEach((wrap) => {
       const img = wrap.querySelector("img");
-      const url = img && img.getAttribute("src");
-      if (!url || !/^https?:\/\//i.test(url)) return;
+      /* Offline pages use a blob: src; the remote URL is the one worth saving. */
+      const remote = img?.dataset.remote || "";
+      const source = img?.getAttribute("src") || "";
+      const url = /^https?:\/\//i.test(remote) ? remote : (/^https?:\/\//i.test(source) ? source : "");
+      if (!url) return;
       pages.push(url);
       codes.push(wrap.dataset.page || "");
+      /* An appended chapter mixed into the view keeps its own label. */
+      chapters.push(wrap.dataset.chapter || "");
     });
 
     if (!pages.length) return null;
@@ -1830,6 +2696,7 @@
       group: state.activeGroup,
       chapter: els.chapterBox.value,
       label: chapterCode(),
+      chapters,
       seriesUrl: state.link?.seriesUrl || "",
       seriesName: state.link?.seriesName || "",
       chapterUrl: state.link?.chapterUrl || "",
@@ -1844,7 +2711,15 @@
     const data = captureProgress();
     if (!data) return;
 
-    const sig = [data.group, data.chapter, data.index, data.pages.length, data.pages[0]].join("|");
+    const sig = [
+      data.group,
+      data.chapter,
+      data.index,
+      data.pages.length,
+      data.pages[0],
+      data.chapters[0],
+      data.chapters[data.chapters.length - 1]
+    ].join("|");
     if (!force && sig === state.progressSig) return;
     state.progressSig = sig;
 
@@ -2024,7 +2899,7 @@
       addPage(
         { url, sourceIndex: 1 },
         {
-          chapter: saved.chapter || "1",
+          chapter: saved.chapters?.[i] || saved.chapter || "1",
           pageCode: saved.codes[i] || padNumberString(String(i + 1), els.pagePad.value),
           exact: true
         }
@@ -2033,6 +2908,7 @@
 
     updateHud();
     scrollToRestoredPage(saved);
+    queueChapterOfflinePages();
 
     /* Rebuild the chapter picker for the same series, so it is there after a restart.
        The cached copy renders immediately; the network only refreshes it. */
@@ -2078,7 +2954,16 @@
 
     if (!state.link) restoreLastSeriesPicker(saved);
 
-    state.progressSig = [saved.group, saved.chapter, saved.index, saved.pages.length, saved.pages[0]].join("|");
+    const sigChapters = Array.isArray(saved.chapters) ? saved.chapters : [];
+    state.progressSig = [
+      saved.group,
+      saved.chapter,
+      saved.index,
+      saved.pages.length,
+      saved.pages[0],
+      sigChapters[0],
+      sigChapters[sigChapters.length - 1]
+    ].join("|");
 
     const label = saved.label || chapterCode(saved.chapter);
     const page = saved.codes[saved.index] || saved.index + 1;
@@ -3242,7 +4127,7 @@
 
       const option = document.createElement("option");
       option.value = String(index);
-      option.textContent = label;
+      option.textContent = hasOfflineChapter(item.url) ? `⬇ ${label}` : label;
       els.chapterSelect.append(option);
       shown += 1;
     });
@@ -3602,6 +4487,23 @@
         pages: []
       };
 
+      /* Already visited (or prefetched) this chapter: no proxy round-trip needed.
+         Older visits fall back to the offline library so Wi-Fi is optional. */
+      let cachedChapter = cachedChapterPages(chapterUrl);
+      if (!cachedChapter) cachedChapter = await readOfflineChapterPages(chapterUrl);
+      if (cachedChapter) {
+        info.chapterLabel = info.chapterLabel || cachedChapter.chapterLabel;
+        info.chapterNumber = Number.isFinite(info.chapterNumber) ? info.chapterNumber : cachedChapter.chapterNumber;
+        info.seriesName = info.seriesName || cachedChapter.seriesName;
+        info.seriesUrl = info.seriesUrl || cachedChapter.seriesUrl;
+        info.pages = cachedChapter.pages;
+      }
+
+      /* Nothing saved and no connection: say so instead of hanging on failed requests. */
+      if (!info.pages.length && navigator.onLine === false) {
+        throw new Error("this chapter is not saved for offline reading");
+      }
+
       if (!info.chapterLabel || !info.seriesUrl || !info.seriesName || !Number.isFinite(info.chapterNumber)) {
         let pageInfo = null;
 
@@ -3737,6 +4639,16 @@
 
       applyLinkMeta(meta);
 
+      /* Remember these pages so Next / Previous (and a revisit) is instant. */
+      cacheChapterPages({
+        chapterUrl: meta.chapterUrl,
+        chapterLabel: meta.chapterLabel,
+        chapterNumber: meta.chapterNumber,
+        seriesUrl: meta.seriesUrl,
+        seriesName: meta.seriesName,
+        pages: meta.pages
+      });
+
       const seriesUrl = info.seriesUrl || "";
       const sameNow = Boolean(seriesUrl) && state.link?.seriesUrl === seriesUrl;
       const keepFull = sameNow && state.link?.fullList;
@@ -3780,6 +4692,7 @@
       };
 
       renderExactPages(meta, !append);
+      queueChapterOfflinePages();
 
       if (!sameNow) els.chapterFilter.value = "";
 
@@ -3808,7 +4721,9 @@
       if (error?.name !== "AbortError") {
         /* One stale link or rate-limited image endpoint should not kill the chapter: rebuild the pattern from the chapter page. */
         try {
-          const recovered = await recoverChapterFromPage(resolvedChapter, { series, index, append, runId });
+          const recovered = navigator.onLine === false
+            ? null
+            : await recoverChapterFromPage(resolvedChapter, { series, index, append, runId });
           if (recovered) return recovered;
         } catch (recoveryError) {
           if (recoveryError?.name === "AbortError") {
@@ -4333,8 +5248,11 @@
     return null;
   }
 
-  async function findWorkingUrlWithRetry(chapterValue, pageValue, runId, announce = true) {
-    const retries = Math.max(0, Math.min(20, parseInt(els.retryCount.value, 10) || 0));
+  async function findWorkingUrlWithRetry(chapterValue, pageValue, runId, announce = true, retryOverride = null) {
+    const configured = Number.isInteger(retryOverride)
+      ? retryOverride
+      : (parseInt(els.retryCount.value, 10) || 0);
+    const retries = Math.max(0, Math.min(20, configured));
     const waitMs = Math.max(0, Math.min(10000, parseInt(els.retryWait.value, 10) || 0));
 
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -4373,17 +5291,21 @@
     return false;
   }
 
-  async function scanChapterPages(chapterValue, runId, clearExisting) {
+  async function scanChapterPages(chapterValue, runId, clearExisting, { fast = false } = {}) {
     const maxPages = Math.max(1, Math.min(300, parseInt(els.maxPages.value, 10) || 60));
     const missLimit = Math.max(1, Math.min(30, parseInt(els.missLimit.value, 10) || 5));
     const startPage = els.pageBox.value.trim() || "1";
     const pad = els.pagePad.value;
     const label = chapterCode(chapterValue);
+    /* Neighbour pages are probed once: a miss at the chapter end is expected, so
+       retry waits would only slow the sequential Next / Previous path. */
+    const retryOverride = fast ? 0 : null;
 
     let found = 0;
     let missedInRow = 0;
     let scanned = 0;
     let stopped = false;
+    const loadedPages = [];
 
     if (clearExisting) {
       els.pages.replaceChildren();
@@ -4393,7 +5315,7 @@
     }
 
     while (scanned < maxPages && !stopped) {
-      if (runId !== state.runId) return { cancelled: true, found, chapter: chapterValue };
+      if (runId !== state.runId) return { cancelled: true, found, chapter: chapterValue, pages: loadedPages };
 
       const batchSize = Math.min(PAGE_CONCURRENCY, maxPages - scanned);
       const offsets = Array.from({ length: batchSize }, (_, index) => scanned + index);
@@ -4404,11 +5326,11 @@
 
       const results = await Promise.all(offsets.map(async (offset) => {
         const pageValue = incrementTextNumber(startPage, offset, pad);
-        const result = await findWorkingUrlWithRetry(chapterValue, pageValue, runId, false);
+        const result = await findWorkingUrlWithRetry(chapterValue, pageValue, runId, false, retryOverride);
         return { offset, pageValue, result };
       }));
 
-      if (runId !== state.runId) return { cancelled: true, found, chapter: chapterValue };
+      if (runId !== state.runId) return { cancelled: true, found, chapter: chapterValue, pages: loadedPages };
 
       results.sort((a, b) => a.offset - b.offset);
 
@@ -4418,6 +5340,7 @@
             chapter: chapterValue,
             pageCode: padNumberString(item.pageValue, pad)
           });
+          loadedPages.push({ page: parseInt(item.pageValue, 10) || loadedPages.length + 1, url: item.result.url });
           found += 1;
           missedInRow = 0;
         } else {
@@ -4434,14 +5357,81 @@
       updateHud();
     }
 
-    return { cancelled: false, found, chapter: chapterValue };
+    return { cancelled: false, found, chapter: chapterValue, pages: loadedPages };
   }
 
-  async function loadPages(clearExisting = true) {
+  async function loadPages(clearExisting = true, { quiet = false, fast = false } = {}) {
     flushSave();
 
     const chapterValue = els.chapterBox.value.trim() || "1";
     const label = chapterCode(chapterValue);
+
+    /* Without a connection, read straight from the offline library. */
+    if (navigator.onLine === false) {
+      const number = Number.isFinite(Number(state.link?.chapterNumber))
+        ? Number(state.link.chapterNumber)
+        : parseFloat(chapterValue);
+
+      /* Only trust the link's chapter URL when it really is the chapter in the box
+         (typing another number must not reopen the previous chapter). */
+      const linkNumber = Number(state.link?.chapterNumber);
+      const sameChapter = !Number.isFinite(number) || !Number.isFinite(linkNumber) || linkNumber === number;
+
+      let offline = state.link?.chapterUrl && sameChapter
+        ? await readOfflineChapterPages(state.link.chapterUrl)
+        : null;
+      if (!offline) offline = await findOfflineChapter(number, state.link?.seriesUrl || "");
+
+      if (!offline) {
+        setStatus(`Chapter ${label} is not saved for offline reading. Connect to the internet to load it.`, "status-bad", 6000);
+        if (clearExisting) {
+          showEmptyMessage(
+            `Chapter ${label} is not saved offline.`,
+            "Open the chapter once while online, or use Download this chapter, to read it without Wi-Fi."
+          );
+        }
+        return { cancelled: false, found: 0, chapter: chapterValue, offline: true };
+      }
+
+      const runId = beginRun();
+      state.cancelAutoNext = false;
+      setStatus(`Loading chapter ${label} from this device…`, "status-warn");
+      if (window.matchMedia("(pointer: coarse)").matches) hidePanel();
+
+      try {
+        state.link = {
+          ...state.link,
+          seriesUrl: state.link?.seriesUrl || offline.seriesUrl,
+          seriesName: state.link?.seriesName || offline.seriesName || "WeebCentral series",
+          chapters: Array.isArray(state.link?.chapters) ? state.link.chapters : [],
+          chapterIndex: Number.isInteger(state.link?.chapterIndex) ? state.link.chapterIndex : -1,
+          chapterUrl: offline.chapterUrl,
+          chapterLabel: offline.chapterLabel || state.link?.chapterLabel || "",
+          chapterNumber: Number.isFinite(offline.chapterNumber) ? offline.chapterNumber : (state.link?.chapterNumber ?? null)
+        };
+
+        renderExactPages({
+          chapterUrl: offline.chapterUrl,
+          chapterLabel: offline.chapterLabel,
+          chapterNumber: offline.chapterNumber,
+          seriesUrl: offline.seriesUrl,
+          seriesName: offline.seriesName,
+          pages: offline.pages
+        }, clearExisting);
+
+        queueChapterOfflinePages();
+        renderChapterPicker();
+        setStatus(
+          `Loaded ${offline.pages.length} page(s) · ${offline.chapterLabel || `Chapter ${label}`} · offline`,
+          "status-ok",
+          4200
+        );
+        if (clearExisting) window.scrollTo({ top: 0 });
+        return { cancelled: false, found: offline.pages.length, chapter: chapterValue, offline: true };
+      } finally {
+        if (runId === state.runId) setBusy(false);
+      }
+    }
 
     if (!getBases().length) {
       setStatus("Paste a WeebCentral link, or add a source URL in the advanced settings.", "status-bad", 4600);
@@ -4456,20 +5446,36 @@
     if (window.matchMedia("(pointer: coarse)").matches) hidePanel();
 
     try {
-      const result = await scanChapterPages(chapterValue, runId, clearExisting);
+      const result = await scanChapterPages(chapterValue, runId, clearExisting, { fast });
       if (result.cancelled) return result;
 
       if (result.found === 0) {
-        if (clearExisting) {
-          showEmptyMessage(
-            "No working pages found.",
-            "Paste the chapter link again, or check the source pattern in the advanced settings."
-          );
+        if (!quiet) {
+          if (clearExisting) {
+            showEmptyMessage(
+              "No working pages found.",
+              "Paste the chapter link again, or check the source pattern in the advanced settings."
+            );
+          }
+          setStatus(`No working pages found for chapter ${label}.`, "status-bad", 6000);
         }
-        setStatus(`No working pages found for chapter ${label}.`, "status-bad", 6000);
       } else {
         setStatus(`Loaded ${result.found} page(s) from chapter ${label}.`, "status-ok", 3500);
         updateHud();
+
+        if (state.link?.chapterUrl && result.pages?.length) {
+          cacheChapterPages({
+            chapterUrl: state.link.chapterUrl,
+            chapterLabel: state.link.chapterLabel,
+            chapterNumber: state.link.chapterNumber,
+            seriesUrl: state.link.seriesUrl,
+            seriesName: state.link.seriesName,
+            pages: result.pages
+          });
+        }
+
+        /* Keep this chapter readable after a restart without Wi-Fi. */
+        queueChapterOfflinePages();
 
         if (clearExisting) {
           window.scrollTo({ top: 0, behavior: "smooth" });
@@ -4490,11 +5496,81 @@
     return waitForFullChapterList(seriesUrl);
   }
 
+  /* Neighbour chapters reuse the current image-link pattern, so Next / Previous
+     need no proxy round-trip. The linked chapter page stays as the fallback. */
+  async function fastStepChapter(delta, append) {
+    const link = state.link;
+    if (!link || !Array.isArray(link.chapters) || !Number.isInteger(link.chapterIndex)) return null;
+
+    const targetIndex = link.chapterIndex + delta;
+    const target = link.chapters[targetIndex];
+    if (!target) return "exhausted";
+    if (!Number.isFinite(Number(target.number))) return null;
+
+    /* Cached pages, a saved offline copy, or a chapter with no link: the normal path is already instant. */
+    if (!target.url || cachedChapterPages(target.url) || hasOfflineChapter(target.url)) {
+      return openChapterItem(target, targetIndex, { append });
+    }
+
+    /* No usable source pattern yet: let WeebCentral resolve it. */
+    if (!getBases().length || !els.base1.value.trim()) return null;
+
+    const previousLink = link;
+    const previousUi = {
+      chapterBox: els.chapterBox.value,
+      pageBox: els.pageBox.value,
+      link: els.linkInput.value
+    };
+
+    state.cancelAutoNext = false;
+    state.link = {
+      ...link,
+      chapterIndex: targetIndex,
+      chapterUrl: target.url,
+      chapterLabel: target.label || `Chapter ${target.number}`,
+      chapterNumber: Number(target.number)
+    };
+
+    els.chapterBox.value = padNumberString(String(target.number), els.chapterPad.value);
+    els.pageBox.value = padNumberString(1, els.pagePad.value);
+    els.linkInput.value = target.url;
+    handleSettingChange();
+    renderChapterPicker();
+
+    const result = await loadPages(!append, { quiet: true, fast: true });
+    if (result.cancelled) return result;
+
+    if (result.found > 0) {
+      setStatus(
+        `Loaded ${result.found} page(s) · ${state.link?.chapterLabel || `Chapter ${target.number}`}`,
+        "status-ok",
+        4000
+      );
+      return result;
+    }
+
+    /* Pattern miss (special chapter or different naming): restore and use the link. */
+    state.link = previousLink;
+    els.chapterBox.value = previousUi.chapterBox;
+    els.pageBox.value = previousUi.pageBox;
+    els.linkInput.value = previousUi.link;
+    handleSettingChange();
+    renderChapterPicker();
+    return null;
+  }
+
   async function prevChapter() {
     flushSave();
     state.cancelAutoNext = true;
 
     await ensureChapterListReady();
+
+    const fast = await fastStepChapter(1, false);
+    if (fast === "exhausted") {
+      setStatus("This is the oldest chapter in the series list.", "status-warn", 3000);
+      return;
+    }
+    if (fast) return fast;
 
     const linked = await stepLinkedChapter(1, false);
     if (linked) return;
@@ -4514,6 +5590,13 @@
     flushSave();
 
     await ensureChapterListReady();
+
+    const fast = await fastStepChapter(-1, true);
+    if (fast === "exhausted") {
+      setStatus("This is the newest chapter in the series list.", "status-warn", 3000);
+      return null;
+    }
+    if (fast) return fast;
 
     const linked = await stepLinkedChapter(-1, true);
     if (linked) return linked;
@@ -4755,6 +5838,10 @@
     const badge = document.createElement("div");
     badge.className = "page-badge";
 
+    const chapterLabel = document.createElement("span");
+    chapterLabel.className = "ch";
+    chapterLabel.textContent = chapterCode(chapter);
+
     const pageLabel = document.createElement("span");
     pageLabel.textContent = `P ${pageCode}`;
 
@@ -4762,7 +5849,7 @@
     sourceLabel.className = "src";
     sourceLabel.textContent = `S${probeResult.sourceIndex}`;
 
-    badge.append(pageLabel, sourceLabel);
+    badge.append(chapterLabel, pageLabel, sourceLabel);
 
     const candidates = [{ url: probeResult.url, sourceIndex: probeResult.sourceIndex }];
 
@@ -4782,6 +5869,8 @@
     }
 
     let candidateIndex = 0;
+    let currentUrl = "";
+    let offlineTried = false;
 
     function showCandidate() {
       if (candidateIndex >= candidates.length) {
@@ -4790,18 +5879,42 @@
       }
 
       const candidate = candidates[candidateIndex++];
+      currentUrl = candidate.url;
+      img.dataset.remote = candidate.url;
       sourceLabel.textContent = `S${candidate.sourceIndex}`;
       img.src = candidate.url;
+    }
+
+    async function tryOfflineCopy(url = currentUrl) {
+      if (offlineTried || !url) return false;
+      offlineTried = true;
+
+      const objectUrl = await readOfflineImage(url);
+      if (!objectUrl) return false;
+
+      img.dataset.offline = "1";
+      img.src = objectUrl;
+      return true;
     }
 
     img.addEventListener("load", () => {
       wrap.classList.add("is-loaded");
       wrap.classList.remove("is-error");
       wrap.querySelector(".page-error")?.remove();
+      if (currentUrl && img.dataset.offline !== "1") queueOfflineImage(currentUrl);
       updateHud();
     });
 
     img.addEventListener("error", () => {
+      if (img.dataset.offline !== "1") {
+        void tryOfflineCopy().then((used) => {
+          if (used) return;
+          if (candidateIndex < candidates.length) showCandidate();
+          else showPageError(wrap, chapter, pageCode);
+        });
+        return;
+      }
+
       if (candidateIndex < candidates.length) showCandidate();
       else showPageError(wrap, chapter, pageCode);
     });
@@ -4819,7 +5932,17 @@
 
     wrap.append(img, badge);
     els.pages.appendChild(wrap);
-    showCandidate();
+
+    /* With no connection, read the saved copy immediately instead of waiting for a network error. */
+    if (navigator.onLine === false) {
+      currentUrl = candidates[0].url;
+      img.dataset.remote = currentUrl;
+      void tryOfflineCopy(currentUrl).then((used) => {
+        if (!used) showCandidate();
+      });
+    } else {
+      showCandidate();
+    }
     updateHud();
 
     return wrap;
@@ -4882,6 +6005,10 @@
   function updateHud() {
     const wraps = els.pages.querySelectorAll(".page-wrap");
     els.bottomChapterNav.hidden = wraps.length === 0;
+
+    /* Appended chapters keep their own page badges; show the label only when they mix. */
+    const chapterCount = new Set([...wraps].map((wrap) => wrap.dataset.chapter)).size;
+    els.pages.classList.toggle("is-multi", chapterCount > 1);
 
     if (!wraps.length) {
       els.readingHud.hidden = true;
@@ -5214,6 +6341,16 @@
         .getSavedSettings();
     }
 
+    /* Offline library: show what is saved, fold in older cached chapters, ask for
+       persistent storage so the browser does not evict downloaded pages. */
+    renderOfflineStats();
+    void migrateOfflineLibrary().then(() => filterChapterOptions()).catch(() => {});
+    try {
+      void navigator.storage?.persist?.()?.catch?.(() => {});
+    } catch {
+      /* Persistence is a hint; file:// and private windows can refuse it. */
+    }
+
     /* Reopen the last chapter and jump back to the page that was on screen.
        If that progress is gone, still bring back the chapter picker for the last series. */
     if (!restoreSession()) restoreLastSeriesPicker();
@@ -5306,6 +6443,16 @@
   els.bottomNextChapterBtn.addEventListener("click", () => void nextChapter());
   els.copyPreviewBtn.addEventListener("click", () => void copyPreviewUrl());
   els.testBtn.addEventListener("click", () => void testPreviewUrl());
+
+  /* offline library */
+  els.downloadAllBtn.addEventListener("click", () => void downloadAllLoadedChapters());
+  els.downloadChapterBtn.addEventListener("click", () => void downloadChapterOffline());
+  els.offlineClearBtn.addEventListener("click", () => {
+    if (!window.confirm("Delete every chapter saved for offline reading?")) return;
+    void clearOfflineLibrary().then(() => {
+      setStatus("Offline chapters deleted.", "status-ok", 3200);
+    });
+  });
 
   /* panel */
   els.hidePanelBtn.addEventListener("click", hidePanel);
