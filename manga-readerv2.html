@@ -1033,7 +1033,7 @@
         </div>
         <input id="chapterFilter" type="search" placeholder="Filter chapters (for example 1198)" aria-label="Filter chapter list" autocomplete="off">
         <select id="chapterSelect" aria-label="Choose a chapter"></select>
-        <div class="chapter-picker-hint">Type a number to filter the list; press Enter to open the first match.</div>
+        <div class="chapter-picker-hint">Type a number to search: the closest chapter appears first (same number of digits, nearest value, then list order). Press Enter to open the first match.</div>
       </div>
 
       <div class="row actions">
@@ -1060,9 +1060,13 @@
         <div class="row">
           <button id="downloadAllBtn" class="good" type="button">Download all loaded chapters</button>
           <button id="downloadChapterBtn" type="button">Download this chapter</button>
+          <button id="exportFolderBtn" type="button">Download to folder</button>
+          <button id="importFolderBtn" type="button">Import folder</button>
           <button id="offlineClearBtn" class="danger" type="button">Clear offline</button>
         </div>
-        <div class="chapter-picker-hint">Every chapter you open is saved on this device automatically, so it opens again without Wi-Fi. Download fills in any pages that were skipped.</div>
+        <input id="importFolderInput" type="file" webkitdirectory multiple hidden>
+        <div class="chapter-picker-hint">Every chapter you open is saved on this device automatically, so it opens again without Wi-Fi. “Download all loaded chapters” fills in any pages that were skipped. “Download to folder” writes a backup to a folder you choose (its name appears below). If the browser blocks the folder chooser (common when the page is opened from a local file), the same backup downloads as a ZIP — unzip it, then use “Import folder” to restore it on another device. When an image host blocks downloading, the page bytes are fetched through wsrv.nl so the backup is still complete.</div>
+        <div id="backupStatus" class="chapter-picker-hint" hidden></div>
       </div>
 
       <details id="advancedSettings" class="advanced">
@@ -1314,11 +1318,14 @@
   const CHAPTER_CACHE_MAX = 400;
   const CHAPTER_CACHE_TTL = 3 * 24 * 60 * 60 * 1000;
   const OFFLINE_DB_NAME = "appsScriptMangaReader.offline";
-  const OFFLINE_DB_VERSION = 2;
+  const OFFLINE_DB_VERSION = 3;
   const OFFLINE_STORE = "pages";
   const OFFLINE_CHAPTER_STORE = "chapters";
   const OFFLINE_INDEX_KEY = "appsScriptMangaReader.offlineIndex";
   const OFFLINE_CHAPTERS_KEY = "appsScriptMangaReader.offlineChapters";
+  const LAST_BACKUP_KEY = "appsScriptMangaReader.lastBackup";
+  /* Used only when an image host refuses a direct cross-origin fetch. */
+  const OFFLINE_IMAGE_PROXY = "https://wsrv.nl/?url=";
   /* Whole chapters are kept; storage pressure, not these numbers, decides eviction. */
   const OFFLINE_MAX_ITEMS = 20000;
   const OFFLINE_MAX_BYTES = 8 * 1024 * 1024 * 1024;
@@ -1364,6 +1371,10 @@
     offlineStats: $("offlineStats"),
     downloadAllBtn: $("downloadAllBtn"),
     downloadChapterBtn: $("downloadChapterBtn"),
+    exportFolderBtn: $("exportFolderBtn"),
+    importFolderBtn: $("importFolderBtn"),
+    importFolderInput: $("importFolderInput"),
+    backupStatus: $("backupStatus"),
     offlineClearBtn: $("offlineClearBtn"),
     advancedSettings: $("advancedSettings"),
     base1: $("base1"),
@@ -1828,6 +1839,26 @@
     }
   }
 
+  /* A flaky scan can miss the first or last page. Never let a shorter scan erase
+     pages that already worked: merge by page number, preferring the newest URL. */
+  function mergePageRows(existing, incoming) {
+    const byCode = new Map();
+
+    const add = (row) => {
+      if (!Array.isArray(row)) return;
+      const url = row[1];
+      if (!/^https?:\/\//i.test(url || "")) return;
+      byCode.set(Number(row[0]) || 0, url);
+    };
+
+    (existing || []).forEach(add);
+    (incoming || []).forEach(add);
+
+    return [...byCode.entries()]
+      .filter(([code]) => code > 0)
+      .sort((a, b) => a[0] - b[0]);
+  }
+
   function cacheChapterPages({ chapterUrl, chapterLabel, chapterNumber, seriesUrl, seriesName, pages }) {
     if (!chapterUrl || !Array.isArray(pages) || !pages.length) return;
 
@@ -1843,13 +1874,14 @@
     if (!rows.length) return;
 
     const cache = readChapterPageCache();
+    const merged = mergePageRows(cache[chapterUrl]?.pages, rows);
     cache[chapterUrl] = {
       at: Date.now(),
       chapterLabel: cleanText(chapterLabel || "", 40),
       chapterNumber: Number.isFinite(Number(chapterNumber)) ? Number(chapterNumber) : null,
       seriesUrl: cleanText(seriesUrl || "", 500),
       seriesName: cleanText(seriesName || "", 90),
-      pages: rows
+      pages: merged
     };
 
     /* Never drop a chapter that has pages saved for offline reading. */
@@ -1870,7 +1902,7 @@
       number: cache[chapterUrl]?.chapterNumber ?? chapterNumber,
       seriesUrl: cache[chapterUrl]?.seriesUrl || seriesUrl || "",
       seriesName: cache[chapterUrl]?.seriesName || seriesName || "",
-      pages: rows
+      pages: merged
     });
   }
 
@@ -2149,13 +2181,17 @@
 
     if (!rows.length) return;
 
+    /* Keep any page a previous scan found but this one missed. */
+    const existing = await idbChapterGet(chapterUrl);
+    const merged = mergePageRows(existing?.pages, rows);
+
     const record = {
       chapterUrl,
-      label: cleanText(label || "", 60),
-      number: Number.isFinite(Number(number)) ? Number(number) : null,
-      seriesUrl: cleanText(seriesUrl || "", 500),
-      seriesName: cleanText(seriesName || "", 90),
-      pages: rows,
+      label: cleanText(label || existing?.label || "", 60),
+      number: Number.isFinite(Number(number)) ? Number(number) : (existing?.number ?? null),
+      seriesUrl: cleanText(seriesUrl || existing?.seriesUrl || "", 500),
+      seriesName: cleanText(seriesName || existing?.seriesName || "", 90),
+      pages: merged,
       at: Date.now()
     };
 
@@ -2166,8 +2202,8 @@
     map[chapterUrl] = {
       label: record.label,
       number: record.number,
-      count: rows.length,
-      stored: offlineStoredPages(rows.map((row) => row[1])),
+      count: merged.length,
+      stored: offlineStoredPages(merged.map((row) => row[1])),
       at: record.at
     };
     writeOfflineChapterMap(map);
@@ -2329,15 +2365,17 @@
   async function ensureChapterImages(record, onProgress) {
     const urls = (record?.pages || []).map((row) => row[1]).filter(Boolean);
     let done = 0;
+    let failed = 0;
 
     for (const url of urls) {
-      await storeOfflineImage(url);
+      const stored = await storeOfflineImage(url);
+      if (!stored) failed += 1;
       done += 1;
-      onProgress?.(done, urls.length);
+      onProgress?.(done, urls.length, failed);
     }
 
     await refreshOfflineChapterStatus(record?.chapterUrl || "");
-    return done;
+    return { done, failed, total: urls.length };
   }
 
   function currentChapterManifest() {
@@ -2391,7 +2429,7 @@
     els.downloadAllBtn.disabled = true;
 
     try {
-      await ensureChapterImages(record, (done, total) => {
+      const result = await ensureChapterImages(record, (done, total) => {
         if (done % 3 === 0 || done === total) {
           setStatus(`Saving offline · page ${done}/${total}…`, "status-warn");
         }
@@ -2401,9 +2439,11 @@
       setStatus(
         complete
           ? `Saved ${record.label || "this chapter"} for offline reading.`
-          : "Saved most pages. Tap Download this chapter again to finish.",
+          : result.failed
+            ? `Saved ${result.done - result.failed} of ${result.total} pages. ${result.failed} could not be fetched; open the chapter while the images show, then try again.`
+            : "Saved most pages. Tap Download this chapter again to finish.",
         complete ? "status-ok" : "status-warn",
-        4500
+        6000
       );
     } finally {
       state.offlineDownloading = false;
@@ -2438,6 +2478,7 @@
     els.downloadAllBtn.disabled = true;
 
     let saved = 0;
+    let failedPages = 0;
 
     try {
       for (let i = 0; i < records.length; i++) {
@@ -2445,24 +2486,727 @@
         const label = record.label || (Number.isFinite(record.number) ? `Chapter ${record.number}` : `Chapter ${i + 1}`);
         setStatus(`Downloading ${i + 1}/${records.length} · ${label}…`, "status-warn");
 
-        await ensureChapterImages(record, (done, total) => {
+        const result = await ensureChapterImages(record, (done, total) => {
           if (done % 4 === 0 || done === total) {
             setStatus(`Downloading ${i + 1}/${records.length} · ${label} · page ${done}/${total}…`, "status-warn");
           }
         });
 
-        saved += 1;
+        failedPages += result.failed;
+        if (hasOfflineChapter(record.chapterUrl)) saved += 1;
         renderOfflineStats();
       }
 
       await enforceOfflineBudget();
-      setStatus(`Downloaded ${saved} chapter${saved === 1 ? "" : "s"} for offline reading.`, "status-ok", 6000);
+      const summary = `Saved ${saved} of ${records.length} chapter${records.length === 1 ? "" : "s"} for offline reading.`;
+      setStatus(
+        failedPages
+          ? `${summary} ${failedPages} page${failedPages === 1 ? "" : "s"} could not be fetched; open those chapters while the images show, then try again.`
+          : summary,
+        failedPages ? "status-warn" : "status-ok",
+        8000
+      );
     } finally {
       state.offlineDownloading = false;
       els.downloadChapterBtn.disabled = false;
       els.downloadAllBtn.disabled = false;
       renderOfflineStats();
       filterChapterOptions();
+    }
+  }
+
+  /* ---------- folder backup (File System Access) ---------- */
+
+  function setOfflineButtonsDisabled(disabled) {
+    for (const button of [
+      els.downloadAllBtn,
+      els.downloadChapterBtn,
+      els.exportFolderBtn,
+      els.importFolderBtn,
+      els.offlineClearBtn
+    ]) {
+      if (button) button.disabled = disabled;
+    }
+  }
+
+  function readLastBackup() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(LAST_BACKUP_KEY) || "null");
+      return parsed && typeof parsed.name === "string" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function rememberLastBackup(name, chapters, pages) {
+    try {
+      localStorage.setItem(
+        LAST_BACKUP_KEY,
+        JSON.stringify({ name: String(name || "folder"), chapters, pages, at: Date.now() })
+      );
+    } catch {
+      /* The banner is a convenience; the backup itself is already on disk. */
+    }
+    renderBackupStatus();
+  }
+
+  function renderBackupStatus() {
+    if (!els.backupStatus) return;
+
+    const last = readLastBackup();
+    if (!last?.name) {
+      els.backupStatus.hidden = true;
+      els.backupStatus.textContent = "";
+      return;
+    }
+
+    const when = new Date(Number(last.at) || Date.now()).toLocaleString();
+    els.backupStatus.hidden = false;
+    els.backupStatus.textContent =
+      `Last backup: “${last.name}” · ${Number(last.chapters) || 0} chapter(s) · ${Number(last.pages) || 0} page(s) · ${when}`;
+  }
+
+  function safeFolderName(value, fallback) {
+    const name = cleanText(value || "", 60)
+      .replace(/[\\/:*?"<>|]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^\.+$/, "");
+    return name || fallback;
+  }
+
+  function imageExtension(url, blob) {
+    /* Trust the saved bytes: a proxy may return JPEG even when the source URL ends in .png. */
+    const type = String(blob?.type || "").toLowerCase();
+    if (type.includes("png")) return "png";
+    if (type.includes("webp")) return "webp";
+    if (type.includes("gif")) return "gif";
+    if (type.includes("avif")) return "avif";
+    if (type.includes("jpeg") || type.includes("jpg")) return "jpg";
+
+    const match = String(url || "").split(/[?#]/)[0].match(/\.(png|jpe?g|webp|gif|avif)$/i);
+    if (match) return match[1].toLowerCase().replace("jpeg", "jpg");
+    return "jpg";
+  }
+
+  async function ensureFolderPath(root, parts) {
+    let dir = root;
+    for (const part of parts) {
+      dir = await dir.getDirectoryHandle(part, { create: true });
+    }
+    return dir;
+  }
+
+  async function writeFolderText(dir, name, text) {
+    const handle = await dir.getFileHandle(name, { create: true });
+    const writable = await handle.createWritable();
+    await writable.write(text);
+    await writable.close();
+  }
+
+  /* Minimal ZIP writer (stored, no compression) so the backup still works from
+     file:// pages where Chrome refuses to open a folder chooser. */
+  const ZIP_CRC_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      table[n] = c >>> 0;
+    }
+    return table;
+  })();
+
+  function zipCrc32(bytes) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < bytes.length; i++) {
+      crc = ZIP_CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  function zipDosDateTime(date) {
+    const value = date instanceof Date ? date : new Date();
+    const year = Math.max(1980, value.getFullYear());
+    return {
+      time: (value.getHours() << 11) | (value.getMinutes() << 5) | (value.getSeconds() >> 1),
+      date: ((year - 1980) << 9) | ((value.getMonth() + 1) << 5) | value.getDate()
+    };
+  }
+
+  async function buildZipBlob(entries) {
+    const encoder = new TextEncoder();
+    const parts = [];
+    const central = [];
+    let offset = 0;
+
+    for (const entry of entries) {
+      const nameBytes = encoder.encode(entry.name);
+      const data = new Uint8Array(await entry.blob.arrayBuffer());
+      const crc = zipCrc32(data);
+      const stamp = zipDosDateTime(entry.date);
+
+      const local = new Uint8Array(30 + nameBytes.length);
+      const lv = new DataView(local.buffer);
+      lv.setUint32(0, 0x04034b50, true);
+      lv.setUint16(4, 20, true);
+      lv.setUint16(6, 0x0800, true);
+      lv.setUint16(8, 0, true);
+      lv.setUint16(10, stamp.time, true);
+      lv.setUint16(12, stamp.date, true);
+      lv.setUint32(14, crc, true);
+      lv.setUint32(18, data.length, true);
+      lv.setUint32(22, data.length, true);
+      lv.setUint16(26, nameBytes.length, true);
+      local.set(nameBytes, 30);
+
+      const header = new Uint8Array(46 + nameBytes.length);
+      const cv = new DataView(header.buffer);
+      cv.setUint32(0, 0x02014b50, true);
+      cv.setUint16(4, 20, true);
+      cv.setUint16(6, 20, true);
+      cv.setUint16(8, 0x0800, true);
+      cv.setUint16(10, 0, true);
+      cv.setUint16(12, stamp.time, true);
+      cv.setUint16(14, stamp.date, true);
+      cv.setUint32(16, crc, true);
+      cv.setUint32(20, data.length, true);
+      cv.setUint32(24, data.length, true);
+      cv.setUint16(28, nameBytes.length, true);
+      cv.setUint32(42, offset, true);
+      header.set(nameBytes, 46);
+
+      parts.push(local, data);
+      central.push(header);
+      offset += local.length + data.length;
+    }
+
+    const centralSize = central.reduce((sum, part) => sum + part.length, 0);
+    const end = new Uint8Array(22);
+    const ev = new DataView(end.buffer);
+    ev.setUint32(0, 0x06054b50, true);
+    ev.setUint16(8, entries.length, true);
+    ev.setUint16(10, entries.length, true);
+    ev.setUint32(12, centralSize, true);
+    ev.setUint32(16, offset, true);
+
+    return new Blob([...parts, ...central, end], { type: "application/zip" });
+  }
+
+  function downloadBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = name;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
+  function directoryFileSource(directory) {
+    return {
+      name: directory.name || "folder",
+      async getFile(path) {
+        const parts = String(path || "").split("/").filter(Boolean);
+        const name = parts.pop();
+        if (!name) return null;
+
+        try {
+          let dir = directory;
+          for (const part of parts) dir = await dir.getDirectoryHandle(part);
+          const handle = await dir.getFileHandle(name);
+          return await handle.getFile();
+        } catch {
+          return null;
+        }
+      }
+    };
+  }
+
+  function fileListSource(rootName, files) {
+    const map = new Map();
+
+    for (const file of files) {
+      let path = file.webkitRelativePath || file.name;
+      if (rootName && path.startsWith(`${rootName}/`)) path = path.slice(rootName.length + 1);
+      map.set(path, file);
+    }
+
+    return {
+      name: rootName || "folder",
+      async getFile(path) {
+        return map.get(path) || null;
+      }
+    };
+  }
+
+  /* Store imported blobs in one index update, then free anything over the cap. */
+  async function addOfflineBlobs(blobs) {
+    const stored = [];
+
+    for (const item of blobs) {
+      if (!item?.url || !item.blob?.size) continue;
+      const saved = await idbOfflinePut({
+        url: item.url,
+        blob: item.blob,
+        at: Date.now(),
+        size: item.blob.size
+      });
+      if (saved) stored.push({ url: item.url, size: item.blob.size });
+    }
+
+    if (!stored.length) return 0;
+
+    const fresh = new Set(stored.map((entry) => entry.url));
+    const next = [
+      ...stored.map((entry, index) => ({ ...entry, at: Date.now() - index })),
+      ...readOfflineIndex().filter((entry) => !fresh.has(entry.url))
+    ];
+    const kept = trimOfflineIndex(next);
+    writeOfflineIndex(kept);
+
+    const keptUrls = new Set(kept.map((entry) => entry.url));
+    const removed = next.filter((entry) => !keptUrls.has(entry.url));
+    if (removed.length) {
+      await idbOfflineDelete(removed.map((entry) => entry.url));
+      removed.forEach((entry) => revokeOfflineUrl(entry.url));
+    }
+
+    return stored.length;
+  }
+
+  async function importLibraryFromSource(source) {
+    const manifestFile = await source.getFile("manga-library.json");
+    if (!manifestFile) {
+      setStatus(`“${source.name}” is not a reader backup: manga-library.json is missing.`, "status-bad", 7000);
+      return;
+    }
+
+    let manifest;
+    try {
+      manifest = JSON.parse(await manifestFile.text());
+    } catch {
+      setStatus("That manga-library.json is damaged and could not be read.", "status-bad", 7000);
+      return;
+    }
+
+    const chapters = Array.isArray(manifest?.chapters) ? manifest.chapters : [];
+    if (!chapters.length) {
+      setStatus("That backup folder has no chapters in it.", "status-warn", 5000);
+      return;
+    }
+
+    state.offlineDownloading = true;
+    setOfflineButtonsDisabled(true);
+
+    let importedChapters = 0;
+    let importedPages = 0;
+    let missingPages = 0;
+    const imported = [];
+
+    try {
+      for (let i = 0; i < chapters.length; i++) {
+        const chapter = chapters[i];
+        const chapterUrl = String(chapter?.chapterUrl || "").trim();
+        if (!/^https?:\/\//i.test(chapterUrl) || !Array.isArray(chapter.pages)) continue;
+
+        const label = cleanText(chapter.label || "", 60);
+        setStatus(`Importing ${i + 1}/${chapters.length} · ${label || `chapter ${i + 1}`}…`, "status-warn");
+
+        const rows = [];
+        const blobs = [];
+
+        for (const page of chapter.pages) {
+          const url = String(page?.url || "").trim();
+          if (!/^https?:\/\//i.test(url)) continue;
+
+          const code = Number(page?.page) || rows.length + 1;
+          const file = page?.file ? await source.getFile(String(page.file)) : null;
+
+          if (file && file.size) {
+            blobs.push({ url, blob: file });
+            importedPages += 1;
+          } else {
+            missingPages += 1;
+          }
+
+          rows.push([code, url]);
+        }
+
+        if (!rows.length) continue;
+
+        await addOfflineBlobs(blobs);
+
+        const existing = await idbChapterGet(chapterUrl);
+        const merged = mergePageRows(existing?.pages, rows);
+
+        await idbChapterPut({
+          chapterUrl,
+          label: label || existing?.label || "",
+          number: Number.isFinite(Number(chapter.number)) ? Number(chapter.number) : (existing?.number ?? null),
+          seriesUrl: cleanText(chapter.seriesUrl || existing?.seriesUrl || "", 500),
+          seriesName: cleanText(chapter.seriesName || existing?.seriesName || "", 90),
+          pages: merged,
+          at: Date.now()
+        });
+
+        importedChapters += 1;
+        imported.push({ chapterUrl, label, number: chapter.number, pages: merged });
+      }
+
+      const map = readOfflineChapterMap();
+      for (const entry of imported) {
+        map[entry.chapterUrl] = {
+          label: entry.label,
+          number: Number.isFinite(Number(entry.number)) ? Number(entry.number) : null,
+          count: entry.pages.length,
+          stored: offlineStoredPages(entry.pages.map((row) => row[1])),
+          at: Date.now()
+        };
+      }
+      writeOfflineChapterMap(map);
+
+      void enforceOfflineBudget();
+
+      rememberLastBackup(source.name, importedChapters, importedPages);
+
+      const summary = `Imported ${importedChapters} chapter${importedChapters === 1 ? "" : "s"} · ${importedPages} page${importedPages === 1 ? "" : "s"} from “${source.name}”.`;
+      setStatus(
+        missingPages ? `${summary} ${missingPages} page${missingPages === 1 ? " was" : "s were"} missing from the folder.` : summary,
+        missingPages ? "status-warn" : "status-ok",
+        8000
+      );
+    } catch (error) {
+      setStatus(`Folder import failed: ${error?.message || "unknown error"}`, "status-bad", 7000);
+    } finally {
+      state.offlineDownloading = false;
+      setOfflineButtonsDisabled(false);
+      renderOfflineStats();
+      filterChapterOptions();
+    }
+  }
+
+  async function importLibraryFolder() {
+    if (state.offlineDownloading) return;
+
+    if (typeof window.showDirectoryPicker !== "function") {
+      els.importFolderInput.value = "";
+      els.importFolderInput.click();
+      return;
+    }
+
+    let directory;
+    try {
+      directory = await window.showDirectoryPicker({ id: "manga-reader-library", mode: "read" });
+    } catch (error) {
+      if (error?.name !== "AbortError") {
+        els.importFolderInput.value = "";
+        els.importFolderInput.click();
+        setStatus(
+          `The folder chooser is not available here (${error?.message || "blocked"}). Pick the unzipped backup folder in the file browser that opened instead.`,
+          "status-warn",
+          9000
+        );
+      }
+      return;
+    }
+
+    if (directory) await importLibraryFromSource(directoryFileSource(directory));
+  }
+
+  async function importLibraryFromInput() {
+    const files = [...(els.importFolderInput.files || [])];
+    if (!files.length) return;
+
+    const rootName = (files[0].webkitRelativePath || "").split("/")[0] || "";
+    await importLibraryFromSource(fileListSource(rootName, files));
+    els.importFolderInput.value = "";
+  }
+
+  /* Chrome blocks the folder chooser on some file:// installs. Pack the same
+     library into a ZIP download so the pages always land somewhere visible. */
+  async function exportLibraryAsZip(reason) {
+    if (state.offlineDownloading) return;
+
+    let records = await idbChapterGetAll();
+    const current = currentChapterManifest();
+
+    if (current && !records.some((record) => record.chapterUrl === current.chapterUrl)) {
+      await rememberOfflineChapter(current);
+      records = await idbChapterGetAll();
+    }
+
+    if (!records.length) {
+      setStatus("No loaded chapters to save yet.", "status-warn", 3500);
+      return;
+    }
+
+    state.offlineDownloading = true;
+    setOfflineButtonsDisabled(true);
+
+    let written = 0;
+    let expected = 0;
+    const entries = [];
+    const manifest = {
+      app: "appsScriptMangaReader",
+      version: 1,
+      exportedAt: Date.now(),
+      chapters: []
+    };
+
+    try {
+      for (let i = 0; i < records.length; i++) {
+        const record = records[i];
+        const label = cleanText(record.label || "", 60) ||
+          (Number.isFinite(record.number) ? `Chapter ${record.number}` : `Chapter ${i + 1}`);
+
+        setStatus(`Preparing ZIP ${i + 1}/${records.length} · ${label}…`, "status-warn");
+        await ensureChapterImages(record, (done, total) => {
+          if (done % 5 === 0 || done === total) {
+            setStatus(`Preparing ZIP ${i + 1}/${records.length} · ${label} · page ${done}/${total}…`, "status-warn");
+          }
+        });
+
+        const folderParts = [
+          "images",
+          safeFolderName(record.seriesName, "series"),
+          safeFolderName(label, `chapter-${i + 1}`)
+        ];
+        const pages = [];
+        expected += Array.isArray(record.pages) ? record.pages.length : 0;
+
+        for (const row of record.pages || []) {
+          const code = Array.isArray(row) ? Number(row[0]) : 0;
+          const url = Array.isArray(row) ? row[1] : "";
+          if (!/^https?:\/\//i.test(url || "")) continue;
+
+          const stored = await idbOfflineGet(url);
+          if (!stored?.blob?.size) continue;
+
+          const filename = `${String(code || pages.length + 1).padStart(3, "0")}.${imageExtension(url, stored.blob)}`;
+          entries.push({ name: [...folderParts, filename].join("/"), blob: stored.blob });
+          pages.push({
+            page: code || pages.length + 1,
+            url,
+            file: [...folderParts, filename].join("/")
+          });
+          written += 1;
+
+          if (written % 10 === 0) {
+            setStatus(`Packing page ${written}/${expected} into the ZIP…`, "status-warn");
+          }
+        }
+
+        if (pages.length) {
+          manifest.chapters.push({
+            chapterUrl: record.chapterUrl,
+            label,
+            number: Number.isFinite(record.number) ? record.number : null,
+            seriesUrl: record.seriesUrl || "",
+            seriesName: record.seriesName || "",
+            pages
+          });
+        }
+      }
+
+      if (!written) {
+        setStatus(
+          "No page images are saved on this device yet, so the backup would be empty. Open a chapter while online, press “Download all loaded chapters”, then try “Download to folder” again.",
+          "status-bad",
+          10000
+        );
+        return;
+      }
+
+      entries.push({
+        name: "manga-library.json",
+        blob: new Blob([JSON.stringify(manifest, null, 2)], { type: "application/json" })
+      });
+      entries.push({
+        name: "README.txt",
+        blob: new Blob([
+          [
+            "Manga Reader backup",
+            "",
+            "Unzip this file, open manga-reader.html, open the menu, then choose “Import folder”",
+            "and select the unzipped folder. The import restores every chapter and page for",
+            "reading without Wi-Fi.",
+            "",
+            `Chapters: ${manifest.chapters.length}`,
+            `Pages: ${written}`,
+            `Created: ${new Date(manifest.exportedAt).toLocaleString()}`
+          ].join("\n")
+        ], { type: "text/plain" })
+      });
+
+      const stamp = new Date(manifest.exportedAt).toISOString().slice(0, 10);
+      const name = `manga-library-${stamp}.zip`;
+      const zip = await buildZipBlob(entries);
+      downloadBlob(zip, name);
+
+      rememberLastBackup(name, manifest.chapters.length, written);
+
+      const missing = Math.max(0, expected - written);
+      const summary = `Saved ${manifest.chapters.length} chapter${manifest.chapters.length === 1 ? "" : "s"} · ${written} page${written === 1 ? "" : "s"} to “${name}” in your Downloads folder. Unzip it, then use “Import folder”.`;
+      setStatus(
+        `${reason ? `${reason} ` : ""}${summary}${missing ? ` ${missing} page${missing === 1 ? " was" : "s were"} not available.` : ""}`,
+        missing ? "status-warn" : "status-ok",
+        14000
+      );
+    } catch (error) {
+      setStatus(`ZIP backup failed: ${error?.message || "unknown error"}`, "status-bad", 7000);
+    } finally {
+      state.offlineDownloading = false;
+      setOfflineButtonsDisabled(false);
+      renderOfflineStats();
+    }
+  }
+
+  async function exportLibraryToFolder() {
+    if (state.offlineDownloading) return;
+
+    if (typeof window.showDirectoryPicker !== "function") {
+      await exportLibraryAsZip("This browser cannot open a folder chooser here.");
+      return;
+    }
+
+    let directory;
+    try {
+      directory = await window.showDirectoryPicker({ id: "manga-reader-library", mode: "readwrite" });
+    } catch (error) {
+      if (error?.name !== "AbortError") {
+        await exportLibraryAsZip(`The folder chooser is not available here (${error?.message || "blocked"}).`);
+      }
+      return;
+    }
+
+    if (!directory) return;
+
+    let records = await idbChapterGetAll();
+    const current = currentChapterManifest();
+
+    if (current && !records.some((record) => record.chapterUrl === current.chapterUrl)) {
+      await rememberOfflineChapter(current);
+      records = await idbChapterGetAll();
+    }
+
+    if (!records.length) {
+      setStatus("No loaded chapters to save yet.", "status-warn", 3500);
+      return;
+    }
+
+    state.offlineDownloading = true;
+    setOfflineButtonsDisabled(true);
+
+    let written = 0;
+    let expected = 0;
+    const manifest = {
+      app: "appsScriptMangaReader",
+      version: 1,
+      exportedAt: Date.now(),
+      chapters: []
+    };
+
+    try {
+      for (let i = 0; i < records.length; i++) {
+        const record = records[i];
+        const label = cleanText(record.label || "", 60) ||
+          (Number.isFinite(record.number) ? `Chapter ${record.number}` : `Chapter ${i + 1}`);
+
+        setStatus(`Preparing ${i + 1}/${records.length} · ${label}…`, "status-warn");
+        await ensureChapterImages(record, (done, total) => {
+          if (done % 5 === 0 || done === total) {
+            setStatus(`Preparing ${i + 1}/${records.length} · ${label} · page ${done}/${total}…`, "status-warn");
+          }
+        });
+
+        const folderParts = [
+          "images",
+          safeFolderName(record.seriesName, "series"),
+          safeFolderName(label, `chapter-${i + 1}`)
+        ];
+        const chapterDir = await ensureFolderPath(directory, folderParts);
+        const pages = [];
+        expected += Array.isArray(record.pages) ? record.pages.length : 0;
+
+        for (const row of record.pages || []) {
+          const code = Array.isArray(row) ? Number(row[0]) : 0;
+          const url = Array.isArray(row) ? row[1] : "";
+          if (!/^https?:\/\//i.test(url || "")) continue;
+
+          const stored = await idbOfflineGet(url);
+          if (!stored?.blob?.size) continue;
+
+          const filename = `${String(code || pages.length + 1).padStart(3, "0")}.${imageExtension(url, stored.blob)}`;
+          const fileHandle = await chapterDir.getFileHandle(filename, { create: true });
+          const writable = await fileHandle.createWritable();
+          await writable.write(stored.blob);
+          await writable.close();
+
+          pages.push({
+            page: code || pages.length + 1,
+            url,
+            file: [...folderParts, filename].join("/")
+          });
+          written += 1;
+
+          if (written % 10 === 0) {
+            setStatus(`Saving page ${written}/${expected} to “${directory.name}”…`, "status-warn");
+          }
+        }
+
+        if (pages.length) {
+          manifest.chapters.push({
+            chapterUrl: record.chapterUrl,
+            label,
+            number: Number.isFinite(record.number) ? record.number : null,
+            seriesUrl: record.seriesUrl || "",
+            seriesName: record.seriesName || "",
+            pages
+          });
+        }
+      }
+
+      if (!written) {
+        setStatus(
+          `No page images are saved on this device yet, so “${directory.name}” would be empty. Open a chapter while online, press “Download all loaded chapters”, then try “Download to folder” again.`,
+          "status-bad",
+          10000
+        );
+        return;
+      }
+
+      await writeFolderText(directory, "manga-library.json", JSON.stringify(manifest, null, 2));
+      await writeFolderText(
+        directory,
+        "README.txt",
+        [
+          "Manga Reader backup",
+          "",
+          "Open manga-reader.html, open the menu, then choose “Import folder” and select this folder.",
+          "The import restores every chapter and page for reading without Wi-Fi.",
+          "",
+          `Chapters: ${manifest.chapters.length}`,
+          `Pages: ${written}`,
+          `Created: ${new Date(manifest.exportedAt).toLocaleString()}`
+        ].join("\n")
+      );
+
+      const missing = Math.max(0, expected - written);
+      rememberLastBackup(directory.name, manifest.chapters.length, written);
+
+      const summary = `Saved ${manifest.chapters.length} chapter${manifest.chapters.length === 1 ? "" : "s"} · ${written} page${written === 1 ? "" : "s"} to folder “${directory.name}”.`;
+      setStatus(
+        missing ? `${summary} ${missing} page${missing === 1 ? " was" : "s were"} not available.` : summary,
+        missing ? "status-warn" : "status-ok",
+        9000
+      );
+    } catch (error) {
+      setStatus(`Folder save failed: ${error?.message || "unknown error"}`, "status-bad", 7000);
+    } finally {
+      state.offlineDownloading = false;
+      setOfflineButtonsDisabled(false);
+      renderOfflineStats();
     }
   }
 
@@ -2497,25 +3241,45 @@
     return objectUrl;
   }
 
+  async function fetchOfflineImageBlob(url, useProxy) {
+    const target = useProxy ? `${OFFLINE_IMAGE_PROXY}${encodeURIComponent(url)}` : url;
+    const response = await fetch(target, { cache: useProxy ? "default" : "force-cache" });
+    if (!response.ok) return null;
+
+    const blob = await response.blob();
+    if (!blob?.size || !/^image\//i.test(blob.type || "")) return null;
+    return blob;
+  }
+
+  /* Returns true when the page is safely on this device. */
   async function storeOfflineImage(url) {
-    if (!url || !/^https?:\/\//i.test(url) || offlineObjectUrls.has(url)) return;
+    if (!url || !/^https?:\/\//i.test(url)) return false;
+    if (offlineObjectUrls.has(url)) return true;
 
     const index = readOfflineIndex();
-    if (index.some((entry) => entry.url === url)) return;
+    if (index.some((entry) => entry.url === url)) return true;
 
     let blob = null;
     try {
-      const response = await fetch(url, { cache: "force-cache" });
-      if (!response.ok) return;
-      blob = await response.blob();
+      blob = await fetchOfflineImageBlob(url, false);
     } catch {
-      return;
+      blob = null;
     }
 
-    if (!blob || !blob.size || !/^image\//i.test(blob.type || "")) return;
+    /* Some image hosts block cross-origin fetch but still render inside an <img>.
+       Ask a CORS-enabled image proxy for the same bytes so the backup is not empty. */
+    if (!blob) {
+      try {
+        blob = await fetchOfflineImageBlob(url, true);
+      } catch {
+        blob = null;
+      }
+    }
+
+    if (!blob) return false;
 
     const stored = await idbOfflinePut({ url, blob, at: Date.now(), size: blob.size });
-    if (!stored) return;
+    if (!stored) return false;
 
     const next = [
       { url, at: Date.now(), size: blob.size },
@@ -2537,6 +3301,7 @@
 
     /* Storage quota (not a fixed count) decides when whole chapters are evicted. */
     if (kept.length % 20 === 0) void enforceOfflineBudget();
+    return true;
   }
 
   function queueOfflineImage(url) {
@@ -4098,6 +4863,67 @@
     els.chapterPickerCount.textContent = "";
   }
 
+  /* Rank chapter matches so the closest comes first: an exact number, then the
+     same number of digits (nearest value), then the nearest value overall.
+     Equal ranks keep the site's original order, which is newest first. */
+  function rankChapterEntries(chapters, rawQuery) {
+    const query = String(rawQuery || "").trim().toLowerCase();
+    const tokens = query
+      .split(/\s+/)
+      .map((token) => token.replace(/^#+/, ""))
+      .filter(Boolean);
+
+    if (!tokens.length) return chapters.map((item, index) => ({ item, index }));
+
+    const numericMatch = query.match(/^(?:ch(?:apter)?\s*|#\s*)*(\d+(?:[.,]\d+)?)$/);
+    const numeric = numericMatch ? numericMatch[1].replace(",", ".") : "";
+    const target = numeric ? Number(numeric) : NaN;
+    const targetDigits = numeric.replace(".", "").length;
+    const entries = [];
+
+    chapters.forEach((item, index) => {
+      const label = String(item.label || `Chapter ${item.number ?? ""}`).toLowerCase().trim();
+      const numberText = Number.isFinite(item.number) ? String(item.number) : "";
+      const haystack = `${label}${numberText ? ` ${numberText} ch${numberText} chapter ${numberText}` : ""}`;
+
+      let tier = 0;
+      let digitGap = 0;
+      let distance = 0;
+
+      if (numeric) {
+        const number = Number.isFinite(item.number) ? Number(item.number) : NaN;
+        if (!Number.isFinite(number)) return;
+
+        const digits = numberText.replace(".", "").length;
+        if (numberText === numeric || number === target) tier = 0;
+        else if (digits === targetDigits) tier = 1;
+        else tier = 2;
+
+        digitGap = Math.abs(digits - targetDigits);
+        distance = Math.abs(number - target);
+      } else {
+        if (!tokens.every((token) => haystack.includes(token))) return;
+
+        if (label === query) tier = 0;
+        else if (label.startsWith(query)) tier = 1;
+        else if (label.split(/[^a-z0-9.]+/).some((word) => word.startsWith(query))) tier = 2;
+        else if (haystack.includes(query)) tier = 3;
+        else tier = 4;
+      }
+
+      entries.push({ item, index, tier, digitGap, distance });
+    });
+
+    entries.sort((a, b) =>
+      a.tier - b.tier ||
+      a.digitGap - b.digitGap ||
+      a.distance - b.distance ||
+      a.index - b.index
+    );
+
+    return entries;
+  }
+
   function filterChapterOptions() {
     const link = state.link;
     const chapters = Array.isArray(link?.chapters) ? link.chapters : [];
@@ -4110,21 +4936,11 @@
       return;
     }
 
-    const tokens = query
-      .split(/\s+/)
-      .map((token) => token.replace(/^#+/, ""))
-      .filter(Boolean);
-
     els.chapterSelect.replaceChildren();
 
     let shown = 0;
-    chapters.forEach((item, index) => {
+    rankChapterEntries(chapters, query).forEach(({ item, index }) => {
       const label = item.label || `Chapter ${item.number}`;
-      const number = Number.isFinite(item.number) ? String(item.number) : "";
-      const haystack = `${label.toLowerCase()}${number ? ` ${number} ch${number} chapter ${number}` : ""}`;
-
-      if (tokens.length && !tokens.every((token) => haystack.includes(token))) return;
-
       const option = document.createElement("option");
       option.value = String(index);
       option.textContent = hasOfflineChapter(item.url) ? `⬇ ${label}` : label;
@@ -4151,7 +4967,7 @@
     const suffix = `${loading ? " · loading…" : ""}`;
 
     els.chapterPickerCount.textContent = query
-      ? `${shown} of ${total}${suffix}`
+      ? `${shown} match${shown === 1 ? "" : "es"} · closest first${suffix}`
       : `${total}${link?.fullList ? "" : " (partial)"}${suffix}`;
   }
 
@@ -5360,6 +6176,178 @@
     return { cancelled: false, found, chapter: chapterValue, pages: loadedPages };
   }
 
+  /* Resolve the WeebCentral chapter URL for the chapter number in the box. */
+  function chapterUrlForNumber(chapterValue) {
+    const link = state.link;
+    const number = parseFloat(chapterValue);
+    const linkNumber = Number(link?.chapterNumber);
+
+    /* Only trust the link's chapter URL when it really is the chapter in the box. */
+    const sameChapter = !Number.isFinite(number) || !Number.isFinite(linkNumber) || linkNumber === number;
+    const listed = Array.isArray(link?.chapters)
+      ? link.chapters.find((item) => Number.isFinite(Number(item.number)) && Number(item.number) === number)
+      : null;
+
+    return {
+      number,
+      sameChapter,
+      listed,
+      chapterUrl: (sameChapter ? link?.chapterUrl : "") || listed?.url || ""
+    };
+  }
+
+  /* Read the exact page list from the chapter page, then from the reader's
+     /images gallery. Returns { pages, info } or null. */
+  async function fetchExactChapterPages(chapterUrl, runId = null) {
+    const stale = () => runId !== null && runId !== state.runId;
+    let pages = [];
+    let info = null;
+
+    async function tryHtml(url) {
+      try {
+        const html = await fetchLinkHtml(url);
+        if (stale()) return null;
+        const found = parseChapterImagesHtml(html);
+        if (!found.length) info = info || parseChapterInfoHtml(html);
+        return found;
+      } catch {
+        return null;
+      }
+    }
+
+    async function tryMarkdown(url) {
+      try {
+        const markdown = await fetchLinkText(url);
+        if (stale()) return null;
+        const fallback = parseChapterMarkdown(markdown);
+        info = info || fallback;
+        return fallback.pages;
+      } catch {
+        return null;
+      }
+    }
+
+    /* 1. The chapter page itself. */
+    pages = (await tryHtml(chapterUrl)) || [];
+    if (stale()) return { cancelled: true };
+    if (!pages.length) {
+      pages = (await tryMarkdown(chapterUrl)) || [];
+      if (stale()) return { cancelled: true };
+    }
+
+    /* 2. The reader gallery endpoint, which is what a normal chapter open uses. */
+    const chapterId = parseWeebLink(chapterUrl)?.id || parseWeebLink(info?.chapterUrl || "")?.id || "";
+    if (!pages.length && chapterId) {
+      const imagesUrl = `${WEEB_ORIGIN}/chapters/${chapterId}/images?is_prev=False&reading_style=long_strip`;
+      pages = (await tryHtml(imagesUrl)) || [];
+      if (stale()) return { cancelled: true };
+      if (!pages.length) {
+        pages = (await tryMarkdown(imagesUrl)) || [];
+        if (stale()) return { cancelled: true };
+      }
+    }
+
+    return pages.length ? { pages, info } : null;
+  }
+
+  /* One exact-page lookup per chapter, shared by every image that fails. */
+  const exactPageLookups = new Map();
+
+  async function exactPageUrlFor(chapterValue, pageCode) {
+    const target = chapterUrlForNumber(chapterValue);
+    if (!target.chapterUrl) return "";
+
+    let pending = exactPageLookups.get(target.chapterUrl);
+    if (!pending) {
+      pending = fetchExactChapterPages(target.chapterUrl)
+        .then((result) => {
+          const byPage = new Map();
+          for (const page of result?.pages || []) {
+            const code = Number(page.page) || byPage.size + 1;
+            if (!byPage.has(code)) byPage.set(code, page.url);
+          }
+          return byPage;
+        })
+        .catch(() => new Map());
+
+      exactPageLookups.set(target.chapterUrl, pending);
+      if (exactPageLookups.size > 8) {
+        exactPageLookups.delete(exactPageLookups.keys().next().value);
+      }
+    }
+
+    const byPage = await pending;
+    return byPage.get(parseInt(pageCode, 10) || 0) || "";
+  }
+
+  /* The source pattern is the fast path, but some Wi-Fi networks block the image
+     mirror it points at. The chapter page (and its /images gallery) still lists
+     the exact page URLs, so use that list as a fallback instead of showing no
+     pages. */
+  async function loadExactPagesFallback(chapterValue, runId, clearExisting) {
+    const link = state.link;
+    const { number, sameChapter, listed, chapterUrl } = chapterUrlForNumber(chapterValue);
+    if (!chapterUrl) return null;
+
+    setStatus(
+      `Source pattern missed chapter ${chapterCode(chapterValue)}; reading the exact page list…`,
+      "status-warn"
+    );
+
+    const result = await fetchExactChapterPages(chapterUrl, runId);
+    if (!result) return null;
+    if (result.cancelled) return { cancelled: true, found: 0, chapter: chapterValue };
+
+    const pages = result.pages;
+    const info = result.info;
+
+    const chapterLabel = (sameChapter ? state.link?.chapterLabel : "") || listed?.label || info?.chapterLabel || "";
+    const chapterNumber = sameChapter && Number.isFinite(Number(state.link?.chapterNumber))
+      ? Number(state.link.chapterNumber)
+      : (Number.isFinite(Number(listed?.number))
+        ? Number(listed.number)
+        : (info?.chapterNumber ?? (Number.isFinite(number) ? number : null)));
+
+    const listedIndex = listed && Array.isArray(link?.chapters) ? link.chapters.indexOf(listed) : -1;
+
+    state.link = {
+      ...state.link,
+      seriesUrl: state.link?.seriesUrl || info?.seriesUrl || "",
+      seriesName: state.link?.seriesName || info?.seriesName || "",
+      chapterIndex: listedIndex >= 0 ? listedIndex : state.link?.chapterIndex,
+      chapterUrl,
+      chapterLabel,
+      chapterNumber
+    };
+
+    const meta = {
+      chapterUrl,
+      chapterLabel,
+      chapterNumber,
+      seriesUrl: state.link.seriesUrl,
+      seriesName: state.link.seriesName,
+      pages
+    };
+
+    renderExactPages(meta, clearExisting);
+
+    cacheChapterPages(meta);
+    queueChapterOfflinePages();
+
+    els.linkInput.value = chapterUrl;
+    renderChapterPicker();
+    updatePreview();
+    scheduleSave();
+
+    setStatus(
+      `Loaded ${pages.length} page(s) from the chapter page · ${chapterLabel || `Chapter ${chapterCode(chapterValue)}`}`,
+      "status-ok",
+      4200
+    );
+    if (clearExisting) window.scrollTo({ top: 0, behavior: "smooth" });
+    return { cancelled: false, found: pages.length, chapter: chapterValue };
+  }
+
   async function loadPages(clearExisting = true, { quiet = false, fast = false } = {}) {
     flushSave();
 
@@ -5450,6 +6438,11 @@
       if (result.cancelled) return result;
 
       if (result.found === 0) {
+        /* Mixed approach: when every pattern URL fails, read the exact page
+           images from the chapter page before giving up. */
+        const recovered = await loadExactPagesFallback(chapterValue, runId, clearExisting);
+        if (recovered) return recovered;
+
         if (!quiet) {
           if (clearExisting) {
             showEmptyMessage(
@@ -5617,996 +6610,3 @@
     els.autoNextCount.value = String(count);
     state.cancelAutoNext = false;
 
-    const buttons = [els.autoNextBtn, els.nextChapterBtn, els.bottomNextChapterBtn, els.loadBtn];
-    buttons.forEach((button) => { button.disabled = true; });
-
-    try {
-      for (let index = 0; index < count; index++) {
-        if (state.cancelAutoNext) {
-          setStatus("Auto-load stopped.", "status-warn", 2600);
-          break;
-        }
-
-        setStatus(`Loading next chapter · ${index + 1}/${count}…`, "status-warn");
-        const result = await nextChapter();
-
-        if (!result || result.cancelled || state.cancelAutoNext) {
-          setStatus(`Auto-load stopped at chapter ${chapterCode()}.`, "status-warn", 3200);
-          break;
-        }
-
-        if (result.found === 0) {
-          setStatus(`No pages in chapter ${chapterCode()}. Auto-load stopped.`, "status-warn", 5000);
-          break;
-        }
-
-        if (index === count - 1) {
-          setStatus(`Added ${count} chapter(s).`, "status-ok", 3200);
-        }
-      }
-    } finally {
-      buttons.forEach((button) => { button.disabled = false; });
-    }
-  }
-
-  async function findLatestChapter() {
-    flushSave();
-    showPanel();
-
-    if (state.link?.seriesUrl) {
-      els.latestBtn.disabled = true;
-      try {
-        if (await openLatestFromSeries()) return;
-      } finally {
-        els.latestBtn.disabled = false;
-      }
-    }
-
-    const startNumber = parseInt(els.chapterBox.value.trim() || "1", 10);
-    if (!Number.isFinite(startNumber) || startNumber < 1) {
-      setStatus("Chapter box must be a number for Latest Chapter.", "status-bad", 4200);
-      return;
-    }
-
-    const scanLimit = Math.max(1, Math.min(2000, parseInt(els.latestScanLimit.value, 10) || 300));
-    const missingLimit = Math.max(1, Math.min(50, parseInt(els.latestMissLimit.value, 10) || 10));
-
-    const runId = beginRun();
-    state.cancelAutoNext = false;
-    els.latestBtn.disabled = true;
-
-    let latest = null;
-    let missedInRow = 0;
-    let offset = 0;
-
-    setStatus(`Searching for the latest chapter from ${chapterCode()}…`, "status-warn");
-
-    try {
-      while (offset <= scanLimit) {
-        if (runId !== state.runId) return;
-
-        const batchSize = Math.min(CHAPTER_CONCURRENCY, scanLimit - offset + 1);
-        const offsets = Array.from({ length: batchSize }, (_, index) => offset + index);
-
-        setStatus(
-          `Scanning chapters ${chapterCode(String(startNumber + offsets[0]))}–${chapterCode(String(startNumber + offsets[batchSize - 1]))} · latest: ${latest ? chapterCode(latest) : "none"}`,
-          "status-warn"
-        );
-
-        const results = await Promise.all(offsets.map(async (relative) => {
-          const chapterValue = padNumberString(String(startNumber + relative), els.chapterPad.value);
-          const exists = await chapterHasAnyPage(chapterValue, runId);
-          return { relative, chapterValue, exists };
-        }));
-
-        if (runId !== state.runId) return;
-
-        results.sort((a, b) => a.relative - b.relative);
-
-        for (const item of results) {
-          if (item.exists) {
-            latest = item.chapterValue;
-            missedInRow = 0;
-          } else {
-            missedInRow += 1;
-            // Keep the stop rule accurate even when chapters were probed in a batch.
-            if (latest && missedInRow >= missingLimit) break;
-          }
-        }
-
-        offset += batchSize;
-
-        if (latest && missedInRow >= missingLimit) break;
-      }
-
-      if (runId !== state.runId) return;
-
-      if (!latest) {
-        setStatus(`No chapter found in the next ${scanLimit} chapter(s).`, "status-bad", 6000);
-        return;
-      }
-
-      els.chapterBox.value = latest;
-      els.pageBox.value = padNumberString(1, els.pagePad.value);
-      updatePreview();
-      setStatus(`Latest chapter found: ${chapterCode(latest)}. Loading…`, "status-ok");
-      await loadPages(true);
-    } finally {
-      els.latestBtn.disabled = false;
-      if (runId === state.runId) setBusy(false);
-    }
-  }
-
-  function showEmptyMessage(title, detail, action = null) {
-    const box = document.createElement("div");
-    box.className = "empty";
-
-    const heading = document.createElement("b");
-    heading.textContent = title;
-    box.appendChild(heading);
-    box.appendChild(document.createElement("br"));
-    box.appendChild(document.createTextNode(detail));
-
-    if (action?.label && typeof action.onClick === "function") {
-      const wrap = document.createElement("div");
-      wrap.style.marginTop = "14px";
-
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = action.label;
-      button.addEventListener("click", () => { void action.onClick(); });
-
-      wrap.appendChild(button);
-      box.appendChild(wrap);
-    }
-
-    els.pages.replaceChildren(box);
-    updateHud();
-  }
-
-  function clearReader() {
-    stopLoading("", "");
-    els.pages.replaceChildren();
-    clearProgress();
-    showEmptyMessage(
-      "Cleared.",
-      "Paste a WeebCentral link in the menu and tap Open / Search to start a chapter."
-    );
-    setStatus("Cleared.", "status-ok", 2000);
-  }
-
-  async function testPreviewUrl() {
-    const url = currentPreviewUrl();
-
-    if (!els.base1.value.trim()) {
-      setStatus("Source URL prefix 1 is empty.", "status-bad", 3600);
-      return;
-    }
-
-    els.testBtn.disabled = true;
-    setStatus("Testing Source 1 with the current chapter and page…", "status-warn");
-
-    try {
-      const ok = await probeImage(url, null, PROBE_TIMEOUT_MS, false);
-      setStatus(
-        ok ? "Source 1 page loaded successfully." : "Source 1 page failed to load. Try Source 2 or check the pattern.",
-        ok ? "status-ok" : "status-bad",
-        5000
-      );
-    } finally {
-      els.testBtn.disabled = false;
-    }
-  }
-
-  async function copyPreviewUrl() {
-    const url = currentPreviewUrl();
-    if (!url) return;
-
-    try {
-      await navigator.clipboard.writeText(url);
-      setStatus("Preview URL copied.", "status-ok", 2200);
-    } catch {
-      const area = document.createElement("textarea");
-      area.value = url;
-      area.setAttribute("readonly", "");
-      area.style.position = "fixed";
-      area.style.opacity = "0";
-      document.body.appendChild(area);
-      area.select();
-      try {
-        document.execCommand("copy");
-        setStatus("Preview URL copied.", "status-ok", 2200);
-      } catch {
-        setStatus("Could not copy automatically. Select the URL and copy it.", "status-warn", 4000);
-      }
-      area.remove();
-    }
-  }
-
-  function addPage(probeResult, { chapter, pageCode, exact = false }) {
-    const wrap = document.createElement("div");
-    wrap.className = "page-wrap";
-    wrap.dataset.chapter = chapter;
-    wrap.dataset.page = pageCode;
-
-    const img = document.createElement("img");
-    img.loading = "lazy";
-    img.decoding = "async";
-    img.referrerPolicy = "no-referrer";
-    img.alt = `Chapter ${chapterCode(chapter)} page ${pageCode}`;
-
-    const badge = document.createElement("div");
-    badge.className = "page-badge";
-
-    const chapterLabel = document.createElement("span");
-    chapterLabel.className = "ch";
-    chapterLabel.textContent = chapterCode(chapter);
-
-    const pageLabel = document.createElement("span");
-    pageLabel.textContent = `P ${pageCode}`;
-
-    const sourceLabel = document.createElement("span");
-    sourceLabel.className = "src";
-    sourceLabel.textContent = `S${probeResult.sourceIndex}`;
-
-    badge.append(chapterLabel, pageLabel, sourceLabel);
-
-    const candidates = [{ url: probeResult.url, sourceIndex: probeResult.sourceIndex }];
-
-    /* The image host sometimes changes between scans-/hot./etc. Keep a mirror as a quiet fallback. */
-    const mirrorUrl = alternateScanBase(probeResult.url);
-    if (mirrorUrl && mirrorUrl !== probeResult.url) {
-      candidates.push({ url: mirrorUrl, sourceIndex: probeResult.sourceIndex });
-    }
-
-    if (!exact) {
-      getBases().forEach((base, index) => {
-        const url = makeUrl(base, chapter, pageCode);
-        if (!candidates.some((candidate) => candidate.url === url)) {
-          candidates.push({ url, sourceIndex: index + 1 });
-        }
-      });
-    }
-
-    let candidateIndex = 0;
-    let currentUrl = "";
-    let offlineTried = false;
-
-    function showCandidate() {
-      if (candidateIndex >= candidates.length) {
-        showPageError(wrap, chapter, pageCode);
-        return;
-      }
-
-      const candidate = candidates[candidateIndex++];
-      currentUrl = candidate.url;
-      img.dataset.remote = candidate.url;
-      sourceLabel.textContent = `S${candidate.sourceIndex}`;
-      img.src = candidate.url;
-    }
-
-    async function tryOfflineCopy(url = currentUrl) {
-      if (offlineTried || !url) return false;
-      offlineTried = true;
-
-      const objectUrl = await readOfflineImage(url);
-      if (!objectUrl) return false;
-
-      img.dataset.offline = "1";
-      img.src = objectUrl;
-      return true;
-    }
-
-    img.addEventListener("load", () => {
-      wrap.classList.add("is-loaded");
-      wrap.classList.remove("is-error");
-      wrap.querySelector(".page-error")?.remove();
-      if (currentUrl && img.dataset.offline !== "1") queueOfflineImage(currentUrl);
-      updateHud();
-    });
-
-    img.addEventListener("error", () => {
-      if (img.dataset.offline !== "1") {
-        void tryOfflineCopy().then((used) => {
-          if (used) return;
-          if (candidateIndex < candidates.length) showCandidate();
-          else showPageError(wrap, chapter, pageCode);
-        });
-        return;
-      }
-
-      if (candidateIndex < candidates.length) showCandidate();
-      else showPageError(wrap, chapter, pageCode);
-    });
-
-    img.addEventListener("click", () => openLightbox(img));
-    img.tabIndex = 0;
-    img.setAttribute("role", "button");
-    img.setAttribute("aria-label", `Open chapter ${chapterCode(chapter)} page ${pageCode} in the lightbox`);
-    img.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        openLightbox(img);
-      }
-    });
-
-    wrap.append(img, badge);
-    els.pages.appendChild(wrap);
-
-    /* With no connection, read the saved copy immediately instead of waiting for a network error. */
-    if (navigator.onLine === false) {
-      currentUrl = candidates[0].url;
-      img.dataset.remote = currentUrl;
-      void tryOfflineCopy(currentUrl).then((used) => {
-        if (!used) showCandidate();
-      });
-    } else {
-      showCandidate();
-    }
-    updateHud();
-
-    return wrap;
-  }
-
-  function showPageError(wrap, chapter, pageCode) {
-    if (!wrap.isConnected) return;
-
-    wrap.classList.add("is-error");
-    wrap.querySelector(".page-error")?.remove();
-
-    const box = document.createElement("div");
-    box.className = "page-error";
-
-    const text = document.createElement("div");
-    text.textContent = `Page ${pageCode} could not be loaded from any source.`;
-
-    const retry = document.createElement("button");
-    retry.type = "button";
-    retry.className = "btn";
-    retry.textContent = "Retry page";
-    retry.addEventListener("click", (event) => {
-      event.stopPropagation();
-      void retryPage(wrap, chapter, pageCode);
-    });
-
-    box.append(text, retry);
-    wrap.appendChild(box);
-  }
-
-  async function retryPage(wrap, chapter, pageCode) {
-    if (!wrap.isConnected) return;
-
-    const img = wrap.querySelector("img");
-    const badgeSource = wrap.querySelector(".page-badge .src");
-    if (!img) return;
-
-    wrap.classList.remove("is-error");
-    wrap.querySelector(".page-error")?.remove();
-    setStatus(`Retrying page ${pageCode}…`, "status-warn");
-
-    const bases = getBases();
-
-    for (let index = 0; index < bases.length; index++) {
-      const url = makeUrl(bases[index], chapter, pageCode);
-      if (badgeSource) badgeSource.textContent = `S${index + 1}`;
-
-      const ok = await probeImage(url, null, PROBE_TIMEOUT_MS, false);
-      if (ok) {
-        img.src = url;
-        setStatus(`Page ${pageCode} loaded from source ${index + 1}.`, "status-ok", 2400);
-        return;
-      }
-    }
-
-    showPageError(wrap, chapter, pageCode);
-    setStatus(`Page ${pageCode} is still unavailable.`, "status-bad", 3600);
-  }
-
-  function updateHud() {
-    const wraps = els.pages.querySelectorAll(".page-wrap");
-    els.bottomChapterNav.hidden = wraps.length === 0;
-
-    /* Appended chapters keep their own page badges; show the label only when they mix. */
-    const chapterCount = new Set([...wraps].map((wrap) => wrap.dataset.chapter)).size;
-    els.pages.classList.toggle("is-multi", chapterCount > 1);
-
-    if (!wraps.length) {
-      els.readingHud.hidden = true;
-      return;
-    }
-
-    els.readingHud.hidden = false;
-    els.hudPages.textContent = `${wraps.length} page${wraps.length === 1 ? "" : "s"}`;
-    updateHudPosition();
-    scheduleProgressSave();
-  }
-
-  function updateHudPosition() {
-    if (els.readingHud.hidden) return;
-
-    const wraps = [...els.pages.querySelectorAll(".page-wrap")];
-    if (!wraps.length) return;
-
-    const middle = window.innerHeight / 2;
-    let current = null;
-    let bestDistance = Infinity;
-
-    for (const wrap of wraps) {
-      const rect = wrap.getBoundingClientRect();
-      if (rect.bottom < 0 || rect.top > window.innerHeight) continue;
-
-      const distance = Math.abs((rect.top + rect.bottom) / 2 - middle);
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        current = wrap;
-      }
-    }
-
-    if (!current) return;
-
-    els.hudChapter.textContent = `Chapter ${chapterCode(current.dataset.chapter)}`;
-    els.hudPosition.textContent = `P ${current.dataset.page}`;
-  }
-
-  function scheduleHudUpdate() {
-    if (state.hudFrame) return;
-    state.hudFrame = setTimeout(() => {
-      state.hudFrame = 0;
-      updateHudPosition();
-    }, 80);
-  }
-
-  function lightboxImages() {
-    return [...els.pages.querySelectorAll(".page-wrap img")]
-      .filter((img) => img.naturalWidth > 0 && !img.closest(".page-wrap.is-error"));
-  }
-
-  function openLightbox(image) {
-    const images = lightboxImages();
-    const index = images.indexOf(image);
-    if (index < 0) return;
-
-    state.lightboxIndex = index;
-    state.lastFocus = document.activeElement;
-    state.zoom = 0;
-    els.lightbox.hidden = false;
-    document.body.classList.add("lightbox-open");
-    renderLightbox();
-    els.lbClose.focus();
-  }
-
-  function renderLightbox() {
-    const images = lightboxImages();
-
-    if (!images.length) {
-      closeLightbox();
-      return;
-    }
-
-    state.lightboxIndex = Math.max(0, Math.min(images.length - 1, state.lightboxIndex));
-    const image = images[state.lightboxIndex];
-    const wrap = image.closest(".page-wrap");
-    const source = image.currentSrc || image.src;
-    const chapter = wrap?.dataset.chapter || els.chapterBox.value;
-    const page = wrap?.dataset.page || "?";
-
-    els.lightboxImg.src = source;
-    els.lightboxImg.alt = image.alt;
-    els.lightboxCaption.textContent =
-      `Chapter ${chapterCode(chapter)} · Page ${page} · ${state.lightboxIndex + 1}/${images.length}`;
-    els.lbOpen.href = source;
-    els.lbDownload.href = source;
-    els.lbPrev.disabled = state.lightboxIndex === 0;
-    els.lbNext.disabled = state.lightboxIndex === images.length - 1;
-    applyZoom();
-    els.lightboxStage.scrollTo({ top: 0, left: 0 });
-  }
-
-  function closeLightbox() {
-    if (els.lightbox.hidden) return;
-
-    els.lightbox.hidden = true;
-    els.lightboxImg.removeAttribute("src");
-    document.body.classList.remove("lightbox-open");
-    state.lightboxIndex = -1;
-    state.lastFocus?.focus?.();
-    state.lastFocus = null;
-  }
-
-  function stepLightbox(delta) {
-    const images = lightboxImages();
-    const nextIndex = state.lightboxIndex + delta;
-    if (nextIndex < 0 || nextIndex >= images.length) return;
-
-    state.lightboxIndex = nextIndex;
-    state.zoom = 0;
-    renderLightbox();
-  }
-
-  function applyZoom() {
-    const image = els.lightboxImg;
-
-    if (state.zoom === 0) {
-      image.style.width = "";
-      image.style.maxWidth = "";
-      image.style.maxHeight = "";
-      els.lbZoomFit.textContent = "Fit";
-    } else {
-      image.style.maxWidth = "none";
-      image.style.maxHeight = "none";
-      image.style.width = `${state.zoom}%`;
-      els.lbZoomFit.textContent = `${state.zoom}%`;
-    }
-  }
-
-  function setZoom(value) {
-    state.zoom = Math.max(0, Math.min(400, value));
-    applyZoom();
-  }
-
-  function isPanelOpen() {
-    return els.panel.classList.contains("is-open");
-  }
-
-  function updatePanelMetrics() {
-    const height = Math.ceil(els.panel.getBoundingClientRect().height);
-    document.documentElement.style.setProperty("--panel-hide-distance", `${Math.max(0, height + 4)}px`);
-  }
-
-  function positionPanelTab() {
-    if (isPanelOpen()) {
-      const height = Math.ceil(els.panel.getBoundingClientRect().height);
-      const tabHeight = Math.ceil(els.panelTab.getBoundingClientRect().height) || 48;
-      els.panelTab.style.top = `${Math.min(Math.max(height - 1, 0), Math.max(0, window.innerHeight - tabHeight))}px`;
-    } else {
-      els.panelTab.style.top = "0px";
-    }
-  }
-
-  function showPanel() {
-    clearTimeout(state.closeTimer);
-    updatePanelMetrics();
-    els.panel.classList.add("is-open");
-    els.panel.inert = false;
-    els.panel.setAttribute("aria-hidden", "false");
-    els.panelTab.setAttribute("aria-expanded", "true");
-    positionPanelTab();
-    // Re-check once fonts/wrapping settle; setInterval is not necessary.
-    setTimeout(positionPanelTab, 60);
-  }
-
-  function hidePanel() {
-    clearTimeout(state.closeTimer);
-    updatePanelMetrics();
-    els.panel.classList.remove("is-open");
-    els.panel.inert = true;
-    els.panel.setAttribute("aria-hidden", "true");
-    els.panelTab.setAttribute("aria-expanded", "false");
-    els.panelTab.style.top = "0px";
-    document.activeElement?.blur?.();
-  }
-
-  function scheduleAutoClose(delay = 900) {
-    clearTimeout(state.closeTimer);
-    state.closeTimer = setTimeout(() => {
-      if (!isPanelOpen()) return;
-
-      const active = document.activeElement;
-      const typing = active && els.panel.contains(active) &&
-        ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName);
-
-      if (typing || els.panel.matches(":hover")) return;
-      hidePanel();
-    }, delay);
-  }
-
-  function togglePanel() {
-    if (isPanelOpen()) hidePanel();
-    else showPanel();
-  }
-
-  function setHelpMode(mode) {
-    state.helpMode = mode === "advanced" ? "advanced" : "quick";
-    const advanced = state.helpMode === "advanced";
-
-    els.quickHelpTab.classList.toggle("active", !advanced);
-    els.advancedHelpTab.classList.toggle("active", advanced);
-    els.quickHelpContent.hidden = advanced;
-    els.advancedHelpContent.hidden = !advanced;
-    els.helpTitle.textContent = advanced ? "Advanced Guide" : "How to use the reader";
-    els.helpSubtitle.textContent = advanced
-      ? "Every button, box, setting and feature"
-      : "Fast setup and easy navigation";
-  }
-
-  function showHelp(mode = "quick") {
-    flushSave();
-    setHelpMode(mode);
-    els.helpOverlay.classList.add("show");
-    els.helpOverlay.setAttribute("aria-hidden", "false");
-    document.body.classList.add("help-open");
-    setTimeout(() => els.helpCloseBtn.focus(), 0);
-  }
-
-  function hideHelp() {
-    els.helpOverlay.classList.remove("show");
-    els.helpOverlay.setAttribute("aria-hidden", "true");
-    document.body.classList.remove("help-open");
-    els.helpBtn.focus();
-  }
-
-  function trapFocus(container, event) {
-    const focusables = [...container.querySelectorAll(
-      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
-    )].filter((element) => element.offsetParent !== null);
-
-    if (!focusables.length) return;
-
-    const first = focusables[0];
-    const last = focusables[focusables.length - 1];
-
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
-
-  function exportSettings() {
-    flushSave();
-
-    const payload = {
-      app: "manga-image-reader",
-      version: SETTINGS_VERSION,
-      exportedAt: new Date().toISOString(),
-      groups: store.groups,
-      selectedGroup: state.activeGroup
-    };
-
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const link = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    link.href = url;
-    link.download = "manga_reader_settings.json";
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-
-    setStatus("Settings exported.", "status-ok", 2600);
-  }
-
-  async function importSettings(file) {
-    if (!file) return;
-
-    try {
-      const parsed = JSON.parse(await file.text());
-      const normalized = normalizeData(parsed);
-
-      if (!normalized) throw new Error("Invalid settings");
-
-      const count = Object.keys(normalized.groups).length;
-      if (Object.keys(store.groups).length && !confirm(`Import ${count} group(s) and replace the current groups?`)) {
-        return;
-      }
-
-      store = normalized;
-      state.activeGroup = store.selectedGroup;
-      persistStore();
-      renderGroupOptions(state.activeGroup);
-      els.groupName.value = state.activeGroup;
-      applyGroupData(store.groups[state.activeGroup]);
-      setStatus(`Imported ${count} group(s).`, "status-ok", 3200);
-    } catch {
-      setStatus("Could not import: the file is not valid reader settings.", "status-bad", 5000);
-    } finally {
-      els.importInput.value = "";
-    }
-  }
-
-  function init() {
-    const local = loadLocalStore();
-    const hadLocal = Boolean(local);
-
-    store = local || createDefaultStore();
-    state.activeGroup = store.selectedGroup;
-
-    renderGroupOptions(state.activeGroup);
-    els.groupName.value = state.activeGroup;
-    applyGroupData(store.groups[state.activeGroup]);
-    updatePanelMetrics();
-    hidePanel();
-    setBusy(false);
-    updateHud();
-
-    if (hadLocal) saveLocal(store);
-    else persistStore(false);
-
-    if (window.google && google.script && google.script.run) {
-      google.script.run
-        .withSuccessHandler((data) => {
-          if (hadLocal) return;
-
-          const normalized = normalizeData(data);
-          if (!normalized) return;
-
-          store = normalized;
-          state.activeGroup = store.selectedGroup;
-          saveLocal(store);
-          renderGroupOptions(state.activeGroup);
-          els.groupName.value = state.activeGroup;
-          applyGroupData(store.groups[state.activeGroup]);
-        })
-        .withFailureHandler(() => {})
-        .getSavedSettings();
-    }
-
-    /* Offline library: show what is saved, fold in older cached chapters, ask for
-       persistent storage so the browser does not evict downloaded pages. */
-    renderOfflineStats();
-    void migrateOfflineLibrary().then(() => filterChapterOptions()).catch(() => {});
-    try {
-      void navigator.storage?.persist?.()?.catch?.(() => {});
-    } catch {
-      /* Persistence is a hint; file:// and private windows can refuse it. */
-    }
-
-    /* Reopen the last chapter and jump back to the page that was on screen.
-       If that progress is gone, still bring back the chapter picker for the last series. */
-    if (!restoreSession()) restoreLastSeriesPicker();
-  }
-
-  /* group controls */
-  els.groupSelect.addEventListener("change", () => {
-    flushSave();
-    loadSelectedGroup();
-  });
-
-  els.newGroupBtn.addEventListener("click", () => {
-    flushSave();
-    newGroup();
-  });
-
-  els.saveGroupBtn.addEventListener("click", () => saveActiveGroup(true, true));
-  els.deleteGroupBtn.addEventListener("click", deleteGroup);
-  els.exportBtn.addEventListener("click", exportSettings);
-  els.importInput.addEventListener("change", () => void importSettings(els.importInput.files?.[0]));
-
-  els.groupName.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      saveActiveGroup(true, true);
-    }
-  });
-
-  /* link / search */
-  els.linkBtn.addEventListener("click", () => void handleLinkAction());
-
-  els.linkInput.addEventListener("input", scheduleLiveSearch);
-
-  els.linkInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      void handleLinkAction();
-    }
-  });
-
-  els.chapterFilter.addEventListener("input", filterChapterOptions);
-
-  els.chapterFilter.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-
-    const index = parseInt(els.chapterSelect.value, 10);
-    const item = state.link?.chapters?.[index];
-    if (Number.isInteger(index) && item) void openChapterItem(item, index);
-  });
-
-  els.chapterSelect.addEventListener("change", () => {
-    const index = parseInt(els.chapterSelect.value, 10);
-    const link = state.link;
-    if (!Number.isFinite(index) || !Array.isArray(link?.chapters)) return;
-    const item = link.chapters[index];
-    if (item) void openChapterItem(item, index);
-  });
-
-  els.chapterListBtn.addEventListener("click", () => {
-    const seriesUrl = state.link?.seriesUrl;
-    if (!seriesUrl) {
-      setStatus("Open a series first, then refresh its chapter list.", "status-warn", 4200);
-      return;
-    }
-    void ensureFullChapterList(seriesUrl, { force: true });
-  });
-
-  /* settings */
-  for (const key of SETTING_KEYS) {
-    if (key === "width" || key === "link") continue;
-    els[key].addEventListener("input", handleSettingChange);
-    els[key].addEventListener("change", handleSettingChange);
-  }
-
-  els.width.addEventListener("change", () => {
-    applyReaderWidth();
-    handleSettingChange();
-  });
-
-  /* reader actions */
-  els.loadBtn.addEventListener("click", () => void loadPages(true));
-  els.latestBtn.addEventListener("click", () => void findLatestChapter());
-  els.prevChapterBtn.addEventListener("click", prevChapter);
-  els.nextChapterBtn.addEventListener("click", () => void nextChapter());
-  els.autoNextBtn.addEventListener("click", () => void autoLoadNext());
-  els.stopBtn.addEventListener("click", () => stopLoading("Stopped."));
-  els.clearBtn.addEventListener("click", clearReader);
-  els.bottomPrevChapterBtn.addEventListener("click", prevChapter);
-  els.bottomNextChapterBtn.addEventListener("click", () => void nextChapter());
-  els.copyPreviewBtn.addEventListener("click", () => void copyPreviewUrl());
-  els.testBtn.addEventListener("click", () => void testPreviewUrl());
-
-  /* offline library */
-  els.downloadAllBtn.addEventListener("click", () => void downloadAllLoadedChapters());
-  els.downloadChapterBtn.addEventListener("click", () => void downloadChapterOffline());
-  els.offlineClearBtn.addEventListener("click", () => {
-    if (!window.confirm("Delete every chapter saved for offline reading?")) return;
-    void clearOfflineLibrary().then(() => {
-      setStatus("Offline chapters deleted.", "status-ok", 3200);
-    });
-  });
-
-  /* panel */
-  els.hidePanelBtn.addEventListener("click", hidePanel);
-
-  els.panelTab.addEventListener("click", (event) => {
-    event.preventDefault();
-    togglePanel();
-  });
-
-  els.panelTab.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      togglePanel();
-    }
-  });
-
-  els.panel.addEventListener("mouseenter", () => {
-    if (!window.matchMedia("(pointer: coarse)").matches) clearTimeout(state.closeTimer);
-  });
-
-  els.panel.addEventListener("mouseleave", () => {
-    if (!window.matchMedia("(pointer: coarse)").matches && isPanelOpen()) scheduleAutoClose(700);
-  });
-
-  document.addEventListener("click", (event) => {
-    if (!isPanelOpen()) return;
-    if (els.panelTab.contains(event.target) || els.panel.contains(event.target)) return;
-
-    if (window.matchMedia("(pointer: coarse)").matches) hidePanel();
-    else scheduleAutoClose(250);
-  });
-
-  /* help */
-  els.helpBtn.addEventListener("click", () => showHelp("quick"));
-  els.quickHelpTab.addEventListener("click", () => setHelpMode("quick"));
-  els.advancedHelpTab.addEventListener("click", () => setHelpMode("advanced"));
-  els.helpCloseBtn.addEventListener("click", hideHelp);
-  els.helpGotItBtn.addEventListener("click", hideHelp);
-
-  els.helpOverlay.addEventListener("click", (event) => {
-    if (event.target === els.helpOverlay) hideHelp();
-  });
-
-  /* lightbox */
-  els.lightboxImg.addEventListener("click", closeLightbox);
-  els.lbClose.addEventListener("click", closeLightbox);
-  els.lbPrev.addEventListener("click", () => stepLightbox(-1));
-  els.lbNext.addEventListener("click", () => stepLightbox(1));
-  els.lbZoomIn.addEventListener("click", () => setZoom(state.zoom === 0 ? 100 : state.zoom + 25));
-  els.lbZoomOut.addEventListener("click", () => {
-    setZoom(state.zoom === 0 ? 0 : (state.zoom - 25 < 50 ? 0 : state.zoom - 25));
-  });
-  els.lbZoomFit.addEventListener("click", () => setZoom(0));
-
-  els.lightboxStage.addEventListener("click", (event) => {
-    if (event.target === els.lightboxStage) closeLightbox();
-  });
-
-  /* keyboard shortcuts */
-  document.addEventListener("keydown", (event) => {
-    if (!els.lightbox.hidden) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        closeLightbox();
-      } else if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        stepLightbox(-1);
-      } else if (event.key === "ArrowRight") {
-        event.preventDefault();
-        stepLightbox(1);
-      } else if (event.key === "+" || event.key === "=") {
-        event.preventDefault();
-        setZoom(state.zoom === 0 ? 100 : state.zoom + 25);
-      } else if (event.key === "-" || event.key === "_") {
-        event.preventDefault();
-        setZoom(state.zoom === 0 ? 0 : (state.zoom - 25 < 50 ? 0 : state.zoom - 25));
-      } else if (event.key === "0") {
-        event.preventDefault();
-        setZoom(0);
-      } else if (event.key === "Tab") {
-        trapFocus(els.lightbox, event);
-      }
-      return;
-    }
-
-    if (els.helpOverlay.classList.contains("show")) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        hideHelp();
-      } else if (event.key === "Tab") {
-        trapFocus(els.helpOverlay.querySelector(".help-dialog"), event);
-      }
-      return;
-    }
-
-    const tag = event.target.tagName;
-    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || event.target.isContentEditable) return;
-
-    if (event.key.toLowerCase() === "p") {
-      event.preventDefault();
-      togglePanel();
-    } else if (event.key.toLowerCase() === "r") {
-      event.preventDefault();
-      void loadPages(true);
-    } else if (event.key === "Escape") {
-      hidePanel();
-    } else if (event.key === "ArrowLeft") {
-      prevChapter();
-    } else if (event.key === "ArrowRight") {
-      void nextChapter();
-    } else if (event.key === "?") {
-      event.preventDefault();
-      showHelp("quick");
-    }
-  });
-
-  window.addEventListener("scroll", () => {
-    scheduleHudUpdate();
-    scheduleProgressSave();
-  }, { passive: true });
-  window.addEventListener("resize", () => {
-    updatePanelMetrics();
-    positionPanelTab();
-    scheduleHudUpdate();
-  });
-  window.addEventListener("orientationchange", () => {
-    setTimeout(() => {
-      updatePanelMetrics();
-      positionPanelTab();
-    }, 80);
-  });
-
-  if (window.ResizeObserver) {
-    const panelObserver = new ResizeObserver(() => {
-      updatePanelMetrics();
-      positionPanelTab();
-    });
-    panelObserver.observe(els.panel);
-  }
-
-  window.addEventListener("beforeunload", () => {
-    flushSave();
-    saveProgress(true);
-  });
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") {
-      flushSave();
-      saveProgress(true);
-    }
-  });
-
-  init();
-})();
-  </script>
-</body>
-
-</html>
