@@ -1302,7 +1302,7 @@
             <div><b>Hide Panel</b><p>Hides the settings menu for clean reading.</p></div>
             <div><b>Menu tab</b><p>Opens the settings menu. On phones it is touch-safe and the menu can scroll.</p></div>
 
-            <div><b>Page badge</b><p>Shows the page code and which source supplied it (S1 or S2).</p></div>
+            <div><b>Page badge</b><p>Shows the page code and which source supplied it (S1, S2, or PX for the image proxy).</p></div>
             <div><b>Click a page</b><p>Opens the lightbox. Use Prev/Next, Fit, +/−, Open original, or Download.</p></div>
             <div><b>Reading HUD</b><p>Shows the current chapter, loaded page count and your page position.</p></div>
             <div><b>Failed page card</b><p>Tries the backup source automatically. If every source fails, use Retry.</p></div>
@@ -4823,6 +4823,22 @@
     return pattern;
   }
 
+  /* Runtime image fallback for networks that can reach WeebCentral but block
+     the scan CDN. This uses the same proxy already used by offline downloads. */
+  function imageProxyUrl(sourceUrl) {
+    const url = safeImageUrl(sourceUrl);
+    if (!url) return "";
+
+    try {
+      const host = new URL(url).hostname.toLowerCase();
+      if (host === "wsrv.nl" || host.endsWith(".wsrv.nl") ||
+          host === "images.weserv.nl" || host.endsWith(".weserv.nl")) return "";
+      return `${OFFLINE_IMAGE_PROXY}${encodeURIComponent(url)}`;
+    } catch {
+      return "";
+    }
+  }
+
   function alternateScanBase(base) {
     if (!base) return "";
 
@@ -5633,7 +5649,7 @@
       rememberChapterList();
       rememberLastSeries();
 
-      setStatus(`Loaded ${meta.pages.length} page(s) · ${meta.chapterLabel}`, "status-ok", 4000);
+      setStatus(`Found ${meta.pages.length} page link(s) · loading images (blocked hosts will try the proxy) · ${meta.chapterLabel}`, "status-warn", 6500);
       if (!append) window.scrollTo({ top: 0, behavior: "smooth" });
       return { cancelled: false, found: meta.pages.length, chapter: els.chapterBox.value };
     } catch (error) {
@@ -6448,9 +6464,9 @@
     scheduleSave();
 
     setStatus(
-      `Loaded ${pages.length} page(s) from the chapter page · ${chapterLabel || `Chapter ${chapterCode(chapterValue)}`}`,
-      "status-ok",
-      4200
+      `Found ${pages.length} page link(s) from the chapter page · loading images with network fallback · ${chapterLabel || `Chapter ${chapterCode(chapterValue)}`}`,
+      "status-warn",
+      6500
     );
     if (clearExisting) window.scrollTo({ top: 0, behavior: "smooth" });
     return { cancelled: false, found: pages.length, chapter: chapterValue };
@@ -6948,24 +6964,36 @@
 
     const sourceLabel = document.createElement("span");
     sourceLabel.className = "src";
-    sourceLabel.textContent = `S${probeResult.sourceIndex}`;
+    sourceLabel.textContent = probeResult.isProxy ? "PX" : `S${probeResult.sourceIndex}`;
 
     badge.append(chapterLabel, pageLabel, sourceLabel);
 
-    const candidates = [{ url: probeResult.url, sourceIndex: probeResult.sourceIndex }];
-
-    /* The image host sometimes changes between scans-/hot./etc. Keep a mirror as a quiet fallback. */
-    const mirrorUrl = alternateScanBase(probeResult.url);
-    if (mirrorUrl && mirrorUrl !== probeResult.url) {
-      candidates.push({ url: mirrorUrl, sourceIndex: probeResult.sourceIndex });
+    const candidates = [];
+    function addCandidate(candidate) {
+      const url = safeImageUrl(candidate?.url || "");
+      if (!url || candidates.some((item) => item.url === url)) return;
+      candidates.push({
+        ...candidate,
+        url,
+        originalUrl: safeImageUrl(candidate.originalUrl || url) || url
+      });
     }
+
+    addCandidate({
+      url: probeResult.url,
+      originalUrl: probeResult.originalUrl || probeResult.url,
+      sourceIndex: probeResult.sourceIndex,
+      isProxy: Boolean(probeResult.isProxy)
+    });
+
+    /* Try the alternate scan hostname and the configured second source. */
+    const mirrorUrl = alternateScanBase(probeResult.originalUrl || probeResult.url);
+    if (mirrorUrl) addCandidate({ url: mirrorUrl, sourceIndex: probeResult.sourceIndex || 1 });
 
     if (!exact) {
       getBases().forEach((base, index) => {
         const url = makeUrl(base, chapter, pageCode);
-        if (!candidates.some((candidate) => candidate.url === url)) {
-          candidates.push({ url, sourceIndex: index + 1 });
-        }
+        addCandidate({ url, sourceIndex: index + 1 });
       });
     }
 
@@ -6973,14 +7001,18 @@
     let currentUrl = "";
     let offlineTried = false;
     let exactTried = false;
+    let proxyCandidatesAdded = false;
 
     async function tryExactRemote() {
       if (exactTried || exact) return false;
       exactTried = true;
 
       const url = await exactPageUrlFor(chapter, pageCode);
-      if (!url || candidates.some((candidate) => candidate.url === url)) return false;
+      if (!url) return false;
 
+      addCandidate({ url, sourceIndex: 1 });
+      /* The exact source is now being attempted directly; start after it if it fails. */
+      candidateIndex = candidates.length;
       currentUrl = url;
       img.dataset.remote = url;
       sourceLabel.textContent = "S1";
@@ -6988,15 +7020,45 @@
       return true;
     }
 
+    function addProxyCandidates() {
+      if (proxyCandidatesAdded) return;
+      proxyCandidatesAdded = true;
+
+      const originals = candidates.filter((candidate) => !candidate.isProxy);
+      originals.forEach((candidate) => {
+        const originalUrl = candidate.originalUrl || candidate.url;
+        const proxyUrl = imageProxyUrl(originalUrl);
+        if (!proxyUrl) return;
+        addCandidate({
+          url: proxyUrl,
+          originalUrl,
+          sourceIndex: candidate.sourceIndex || 1,
+          isProxy: true
+        });
+      });
+    }
+
     function finishCandidates() {
-      if (exactTried || exact) {
-        showPageError(wrap, chapter, pageCode);
+      if (!exactTried && !exact) {
+        void tryExactRemote()
+          .then((used) => {
+            if (!used) {
+              addProxyCandidates();
+              if (candidateIndex < candidates.length) showCandidate();
+              else showPageError(wrap, chapter, pageCode);
+            }
+          })
+          .catch(() => {
+            addProxyCandidates();
+            if (candidateIndex < candidates.length) showCandidate();
+            else showPageError(wrap, chapter, pageCode);
+          });
         return;
       }
 
-      void tryExactRemote().then((used) => {
-        if (!used) showPageError(wrap, chapter, pageCode);
-      });
+      addProxyCandidates();
+      if (candidateIndex < candidates.length) showCandidate();
+      else showPageError(wrap, chapter, pageCode);
     }
 
     function showCandidate() {
@@ -7006,9 +7068,9 @@
       }
 
       const candidate = candidates[candidateIndex++];
-      currentUrl = candidate.url;
-      img.dataset.remote = candidate.url;
-      sourceLabel.textContent = `S${candidate.sourceIndex}`;
+      currentUrl = candidate.originalUrl || candidate.url;
+      img.dataset.remote = currentUrl;
+      sourceLabel.textContent = candidate.isProxy ? "PX" : `S${candidate.sourceIndex || 1}`;
       img.src = candidate.url;
     }
 
@@ -7060,9 +7122,10 @@
     wrap.append(img, badge);
     els.pages.appendChild(wrap);
 
-    /* With no connection, read the saved copy immediately instead of waiting for a network error. */
+    /* If offline, try the saved original immediately. If it is not saved,
+       the normal candidate chain will try the remote host and image proxy. */
     if (navigator.onLine === false) {
-      currentUrl = candidates[0].url;
+      currentUrl = candidates[0]?.originalUrl || candidates[0]?.url || "";
       img.dataset.remote = currentUrl;
       void tryOfflineCopy(currentUrl).then((used) => {
         if (!used) showCandidate();
@@ -7111,22 +7174,42 @@
     wrap.querySelector(".page-error")?.remove();
     setStatus(`Retrying page ${pageCode}…`, "status-warn");
 
-    const bases = getBases();
+    const urls = [];
+    const addUrl = (url, sourceIndex, isProxy = false, originalUrl = url) => {
+      const safe = safeImageUrl(url);
+      if (!safe || urls.some((item) => item.url === safe)) return;
+      urls.push({ url: safe, sourceIndex, isProxy, originalUrl: safeImageUrl(originalUrl) || safe });
+    };
 
-    for (let index = 0; index < bases.length; index++) {
-      const url = makeUrl(bases[index], chapter, pageCode);
-      if (badgeSource) badgeSource.textContent = `S${index + 1}`;
+    const savedOriginal = img.dataset.remote || "";
+    if (savedOriginal) addUrl(savedOriginal, 1);
+    getBases().forEach((base, index) => addUrl(makeUrl(base, chapter, pageCode), index + 1));
 
-      const ok = await probeImage(url, null, PROBE_TIMEOUT_MS, false);
+    const direct = [...urls];
+    direct.forEach((item) => {
+      const proxy = imageProxyUrl(item.originalUrl);
+      if (proxy) addUrl(proxy, item.sourceIndex, true, item.originalUrl);
+    });
+
+    for (const item of urls) {
+      if (!wrap.isConnected) return;
+      if (badgeSource) badgeSource.textContent = item.isProxy ? "PX" : `S${item.sourceIndex}`;
+      const ok = await probeImage(item.url, null, PROBE_TIMEOUT_MS, false);
       if (ok) {
-        img.src = url;
-        setStatus(`Page ${pageCode} loaded from source ${index + 1}.`, "status-ok", 2400);
+        img.dataset.remote = item.originalUrl;
+        delete img.dataset.offline;
+        img.src = item.url;
+        setStatus(
+          item.isProxy ? `Page ${pageCode} loaded through image proxy.` : `Page ${pageCode} loaded from source ${item.sourceIndex}.`,
+          "status-ok",
+          3000
+        );
         return;
       }
     }
 
     showPageError(wrap, chapter, pageCode);
-    setStatus(`Page ${pageCode} is still unavailable.`, "status-bad", 3600);
+    setStatus(`Page ${pageCode} is still unavailable from the image sources and proxy.`, "status-bad", 4200);
   }
 
   function updateHud() {
