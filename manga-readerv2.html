@@ -476,9 +476,21 @@
     #testBtn { border-color: var(--line); }
 
     /* ---------- floating tab ---------- */
-    .panel-tab {
+    #topHotZone {
       position: fixed;
       top: 0;
+      left: 0;
+      right: 0;
+      height: 52px;
+      z-index: 999;
+      touch-action: manipulation;
+    }
+
+    body.panel-open #topHotZone { display: none; }
+
+    .panel-tab {
+      position: fixed;
+      top: env(safe-area-inset-top, 0px);
       left: 50%;
       transform: translateX(-50%);
       z-index: 1000;
@@ -1412,6 +1424,7 @@
 
   const els = {
     panel: $("controlPanel"),
+    topHotZone: $("topHotZone"),
     panelTab: $("panelTab"),
     panelTabLabel: $("panelTabLabel"),
     groupSelect: $("groupSelect"),
@@ -6597,16 +6610,3 @@
           showEmptyMessage(
             `Chapter ${label} is not saved offline.`,
             "Open the chapter once while online, or use Download this chapter, to read it without Wi-Fi."
-          );
-        }
-        return { cancelled: false, found: 0, chapter: chapterValue, offline: true };
-      }
-
-      const runId = beginRun();
-      state.cancelAutoNext = false;
-      setStatus(`Loading chapter ${label} from this device…`, "status-warn");
-      if (window.matchMedia("(pointer: coarse)").matches) hidePanel();
-
-      try {
-        state.link = {
-          ...state.link,
