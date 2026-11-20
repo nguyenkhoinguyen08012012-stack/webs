@@ -6610,3 +6610,1428 @@
     if (!chapterUrl) return null;
 
     setStatus(
+      `Source pattern missed chapter ${chapterCode(chapterValue)}; reading the exact page list…`,
+      "status-warn"
+    );
+
+    const result = await fetchExactChapterPages(chapterUrl, runId);
+    if (!result) return null;
+    if (result.cancelled) return { cancelled: true, found: 0, chapter: chapterValue };
+
+    const pages = result.pages;
+    const info = result.info;
+
+    const chapterLabel = (sameChapter ? state.link?.chapterLabel : "") || listed?.label || info?.chapterLabel || "";
+    const chapterNumber = sameChapter && Number.isFinite(Number(state.link?.chapterNumber))
+      ? Number(state.link.chapterNumber)
+      : (Number.isFinite(Number(listed?.number))
+        ? Number(listed.number)
+        : (info?.chapterNumber ?? (Number.isFinite(number) ? number : null)));
+
+    const listedIndex = listed && Array.isArray(link?.chapters) ? link.chapters.indexOf(listed) : -1;
+
+    state.link = {
+      ...state.link,
+      seriesUrl: state.link?.seriesUrl || info?.seriesUrl || "",
+      seriesName: state.link?.seriesName || info?.seriesName || "",
+      chapterIndex: listedIndex >= 0 ? listedIndex : state.link?.chapterIndex,
+      chapterUrl,
+      chapterLabel,
+      chapterNumber
+    };
+
+    const meta = {
+      chapterUrl,
+      chapterLabel,
+      chapterNumber,
+      seriesUrl: state.link.seriesUrl,
+      seriesName: state.link.seriesName,
+      pages
+    };
+
+    renderExactPages(meta, clearExisting);
+
+    cacheChapterPages(meta);
+    queueChapterOfflinePages();
+
+    els.linkInput.value = chapterUrl;
+    renderChapterPicker();
+    updatePreview();
+    scheduleSave();
+
+    setStatus(
+      `Found ${pages.length} page link(s) from the chapter page · loading images with network fallback · ${chapterLabel || `Chapter ${chapterCode(chapterValue)}`}`,
+      "status-warn",
+      6500
+    );
+    if (clearExisting) window.scrollTo({ top: 0, behavior: "smooth" });
+    return { cancelled: false, found: pages.length, chapter: chapterValue };
+  }
+
+  async function loadPages(clearExisting = true, { quiet = false, fast = false } = {}) {
+    flushSave();
+
+    const chapterValue = els.chapterBox.value.trim() || "1";
+    const label = chapterCode(chapterValue);
+
+    /* Without a connection, read straight from the offline library. */
+    if (navigator.onLine === false) {
+      const number = Number.isFinite(Number(state.link?.chapterNumber))
+        ? Number(state.link.chapterNumber)
+        : parseFloat(chapterValue);
+
+      /* Only trust the link's chapter URL when it really is the chapter in the box
+         (typing another number must not reopen the previous chapter). */
+      const linkNumber = Number(state.link?.chapterNumber);
+      const sameChapter = !Number.isFinite(number) || !Number.isFinite(linkNumber) || linkNumber === number;
+
+      let offline = state.link?.chapterUrl && sameChapter
+        ? await readOfflineChapterPages(state.link.chapterUrl)
+        : null;
+      if (!offline) offline = await findOfflineChapter(number, state.link?.seriesUrl || "");
+
+      if (!offline) {
+        setStatus(`Chapter ${label} is not saved for offline reading. Connect to the internet to load it.`, "status-bad", 6000);
+        if (clearExisting) {
+          showEmptyMessage(
+            `Chapter ${label} is not saved offline.`,
+            "Open the chapter once while online, or use Download this chapter, to read it without Wi-Fi."
+          );
+        }
+        return { cancelled: false, found: 0, chapter: chapterValue, offline: true };
+      }
+
+      const runId = beginRun();
+      state.cancelAutoNext = false;
+      setStatus(`Loading chapter ${label} from this device…`, "status-warn");
+      if (window.matchMedia("(pointer: coarse)").matches) hidePanel();
+
+      try {
+        state.link = {
+          ...state.link,
+          seriesUrl: state.link?.seriesUrl || offline.seriesUrl,
+          seriesName: state.link?.seriesName || offline.seriesName || "WeebCentral series",
+          chapters: Array.isArray(state.link?.chapters) ? state.link.chapters : [],
+          chapterIndex: Number.isInteger(state.link?.chapterIndex) ? state.link.chapterIndex : -1,
+          chapterUrl: offline.chapterUrl,
+          chapterLabel: offline.chapterLabel || state.link?.chapterLabel || "",
+          chapterNumber: Number.isFinite(offline.chapterNumber) ? offline.chapterNumber : (state.link?.chapterNumber ?? null)
+        };
+
+        renderExactPages({
+          chapterUrl: offline.chapterUrl,
+          chapterLabel: offline.chapterLabel,
+          chapterNumber: offline.chapterNumber,
+          seriesUrl: offline.seriesUrl,
+          seriesName: offline.seriesName,
+          pages: offline.pages
+        }, clearExisting);
+
+        queueChapterOfflinePages();
+        renderChapterPicker();
+        setStatus(
+          `Loaded ${offline.pages.length} page(s) · ${offline.chapterLabel || `Chapter ${label}`} · offline`,
+          "status-ok",
+          4200
+        );
+        if (clearExisting) window.scrollTo({ top: 0 });
+        return { cancelled: false, found: offline.pages.length, chapter: chapterValue, offline: true };
+      } finally {
+        if (runId === state.runId) setBusy(false);
+      }
+    }
+
+    if (!getBases().length) {
+      setStatus("Paste a WeebCentral link, or add a source URL in the advanced settings.", "status-bad", 4600);
+      showPanel();
+      return { cancelled: false, found: 0, chapter: chapterValue };
+    }
+
+    const runId = beginRun();
+    state.cancelAutoNext = false;
+    setStatus(`Preparing chapter ${label}…`, "status-warn");
+
+    if (window.matchMedia("(pointer: coarse)").matches) hidePanel();
+
+    try {
+      const result = await scanChapterPages(chapterValue, runId, clearExisting, { fast });
+      if (result.cancelled) return result;
+
+      if (result.found === 0) {
+        /* Mixed approach: when every pattern URL fails, read the exact page
+           images from the chapter page before giving up. */
+        const recovered = await loadExactPagesFallback(chapterValue, runId, clearExisting);
+        if (recovered) return recovered;
+
+        if (!quiet) {
+          if (clearExisting) {
+            showEmptyMessage(
+              "No working pages found.",
+              "Paste the chapter link again, or check the source pattern in the advanced settings."
+            );
+          }
+          setStatus(`No working pages found for chapter ${label}.`, "status-bad", 6000);
+        }
+      } else {
+        setStatus(`Loaded ${result.found} page(s) from chapter ${label}.`, "status-ok", 3500);
+        updateHud();
+
+        if (state.link?.chapterUrl && result.pages?.length) {
+          cacheChapterPages({
+            chapterUrl: state.link.chapterUrl,
+            chapterLabel: state.link.chapterLabel,
+            chapterNumber: state.link.chapterNumber,
+            seriesUrl: state.link.seriesUrl,
+            seriesName: state.link.seriesName,
+            pages: result.pages
+          });
+        }
+
+        /* Keep this chapter readable after a restart without Wi-Fi. */
+        queueChapterOfflinePages();
+
+        if (clearExisting) {
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+      }
+
+      return result;
+    } finally {
+      if (runId === state.runId) setBusy(false);
+    }
+  }
+
+  async function ensureChapterListReady() {
+    const seriesUrl = state.link?.seriesUrl;
+    if (!seriesUrl || state.link?.fullList) return true;
+
+    setStatus(`Loading the full chapter list for ${state.link?.seriesName || "this series"}…`, "status-warn");
+    return waitForFullChapterList(seriesUrl);
+  }
+
+  /* Neighbour chapters reuse the current image-link pattern, so Next / Previous
+     need no proxy round-trip. The linked chapter page stays as the fallback. */
+  async function fastStepChapter(delta, append) {
+    const link = state.link;
+    if (!link || !Array.isArray(link.chapters) || !Number.isInteger(link.chapterIndex)) return null;
+
+    const targetIndex = link.chapterIndex + delta;
+    const target = link.chapters[targetIndex];
+    if (!target) return "exhausted";
+    if (!Number.isFinite(Number(target.number))) return null;
+
+    /* Cached pages, a saved offline copy, or a chapter with no link: the normal path is already instant. */
+    if (!target.url || cachedChapterPages(target.url) || hasOfflineChapter(target.url)) {
+      return openChapterItem(target, targetIndex, { append });
+    }
+
+    /* No usable source pattern yet: let WeebCentral resolve it. */
+    if (!getBases().length || !els.base1.value.trim()) return null;
+
+    const previousLink = link;
+    const previousUi = {
+      chapterBox: els.chapterBox.value,
+      pageBox: els.pageBox.value,
+      link: els.linkInput.value
+    };
+
+    state.cancelAutoNext = false;
+    state.link = {
+      ...link,
+      chapterIndex: targetIndex,
+      chapterUrl: target.url,
+      chapterLabel: target.label || `Chapter ${target.number}`,
+      chapterNumber: Number(target.number)
+    };
+
+    els.chapterBox.value = padNumberString(String(target.number), els.chapterPad.value);
+    els.pageBox.value = padNumberString(1, els.pagePad.value);
+    els.linkInput.value = target.url;
+    handleSettingChange();
+    renderChapterPicker();
+
+    const result = await loadPages(!append, { quiet: true, fast: true });
+    if (result.cancelled) return result;
+
+    if (result.found > 0) {
+      setStatus(
+        `Loaded ${result.found} page(s) · ${state.link?.chapterLabel || `Chapter ${target.number}`}`,
+        "status-ok",
+        4000
+      );
+      return result;
+    }
+
+    /* Pattern miss (special chapter or different naming): restore and use the link. */
+    state.link = previousLink;
+    els.chapterBox.value = previousUi.chapterBox;
+    els.pageBox.value = previousUi.pageBox;
+    els.linkInput.value = previousUi.link;
+    handleSettingChange();
+    renderChapterPicker();
+    return null;
+  }
+
+  async function prevChapter() {
+    flushSave();
+    state.cancelAutoNext = true;
+
+    await ensureChapterListReady();
+
+    const fast = await fastStepChapter(1, false);
+    if (fast === "exhausted") {
+      setStatus("This is the oldest chapter in the series list.", "status-warn", 3000);
+      return;
+    }
+    if (fast) return fast;
+
+    const linked = await stepLinkedChapter(1, false);
+    if (linked) return;
+
+    if (state.link?.chapters?.length) {
+      setStatus("This is the oldest chapter in the series list.", "status-warn", 3000);
+      return;
+    }
+
+    els.chapterBox.value = incrementTextNumber(els.chapterBox.value, -1, els.chapterPad.value);
+    els.pageBox.value = padNumberString(1, els.pagePad.value);
+    handleSettingChange();
+    await loadPages(true);
+  }
+
+  async function nextChapter() {
+    flushSave();
+
+    await ensureChapterListReady();
+
+    const fast = await fastStepChapter(-1, true);
+    if (fast === "exhausted") {
+      setStatus("This is the newest chapter in the series list.", "status-warn", 3000);
+      return null;
+    }
+    if (fast) return fast;
+
+    const linked = await stepLinkedChapter(-1, true);
+    if (linked) return linked;
+
+    if (state.link?.chapters?.length) {
+      setStatus("This is the newest chapter in the series list.", "status-warn", 3000);
+      return null;
+    }
+
+    els.chapterBox.value = incrementTextNumber(els.chapterBox.value, 1, els.chapterPad.value);
+    els.pageBox.value = padNumberString(1, els.pagePad.value);
+    handleSettingChange();
+    return loadPages(false);
+  }
+
+  async function autoLoadNext() {
+    const count = Math.max(1, Math.min(100, parseInt(els.autoNextCount.value, 10) || 1));
+    els.autoNextCount.value = String(count);
+    state.cancelAutoNext = false;
+
+    const buttons = [els.autoNextBtn, els.nextChapterBtn, els.bottomNextChapterBtn, els.loadBtn];
+    buttons.forEach((button) => { button.disabled = true; });
+
+    try {
+      for (let index = 0; index < count; index++) {
+        if (state.cancelAutoNext) {
+          setStatus("Auto-load stopped.", "status-warn", 2600);
+          break;
+        }
+
+        setStatus(`Loading next chapter · ${index + 1}/${count}…`, "status-warn");
+        const result = await nextChapter();
+
+        if (!result || result.cancelled || state.cancelAutoNext) {
+          setStatus(`Auto-load stopped at chapter ${chapterCode()}.`, "status-warn", 3200);
+          break;
+        }
+
+        if (result.found === 0) {
+          setStatus(`No pages in chapter ${chapterCode()}. Auto-load stopped.`, "status-warn", 5000);
+          break;
+        }
+
+        if (index === count - 1) {
+          setStatus(`Added ${count} chapter(s).`, "status-ok", 3200);
+        }
+      }
+    } finally {
+      buttons.forEach((button) => { button.disabled = false; });
+    }
+  }
+
+  async function findLatestChapter() {
+    flushSave();
+    showPanel();
+
+    if (state.link?.seriesUrl) {
+      els.latestBtn.disabled = true;
+      try {
+        if (await openLatestFromSeries()) return;
+      } finally {
+        els.latestBtn.disabled = false;
+      }
+    }
+
+    const startNumber = parseInt(els.chapterBox.value.trim() || "1", 10);
+    if (!Number.isFinite(startNumber) || startNumber < 1) {
+      setStatus("Chapter box must be a number for Latest Chapter.", "status-bad", 4200);
+      return;
+    }
+
+    const scanLimit = Math.max(1, Math.min(2000, parseInt(els.latestScanLimit.value, 10) || 300));
+    const missingLimit = Math.max(1, Math.min(50, parseInt(els.latestMissLimit.value, 10) || 10));
+
+    const runId = beginRun();
+    state.cancelAutoNext = false;
+    els.latestBtn.disabled = true;
+
+    let latest = null;
+    let missedInRow = 0;
+    let offset = 0;
+
+    setStatus(`Searching for the latest chapter from ${chapterCode()}…`, "status-warn");
+
+    try {
+      while (offset <= scanLimit) {
+        if (runId !== state.runId) return;
+
+        const batchSize = Math.min(CHAPTER_CONCURRENCY, scanLimit - offset + 1);
+        const offsets = Array.from({ length: batchSize }, (_, index) => offset + index);
+
+        setStatus(
+          `Scanning chapters ${chapterCode(String(startNumber + offsets[0]))}–${chapterCode(String(startNumber + offsets[batchSize - 1]))} · latest: ${latest ? chapterCode(latest) : "none"}`,
+          "status-warn"
+        );
+
+        const results = await Promise.all(offsets.map(async (relative) => {
+          const chapterValue = padNumberString(String(startNumber + relative), els.chapterPad.value);
+          const exists = await chapterHasAnyPage(chapterValue, runId);
+          return { relative, chapterValue, exists };
+        }));
+
+        if (runId !== state.runId) return;
+
+        results.sort((a, b) => a.relative - b.relative);
+
+        for (const item of results) {
+          if (item.exists) {
+            latest = item.chapterValue;
+            missedInRow = 0;
+          } else {
+            missedInRow += 1;
+            // Keep the stop rule accurate even when chapters were probed in a batch.
+            if (latest && missedInRow >= missingLimit) break;
+          }
+        }
+
+        offset += batchSize;
+
+        if (latest && missedInRow >= missingLimit) break;
+      }
+
+      if (runId !== state.runId) return;
+
+      if (!latest) {
+        setStatus(`No chapter found in the next ${scanLimit} chapter(s).`, "status-bad", 6000);
+        return;
+      }
+
+      els.chapterBox.value = latest;
+      els.pageBox.value = padNumberString(1, els.pagePad.value);
+      updatePreview();
+      setStatus(`Latest chapter found: ${chapterCode(latest)}. Loading…`, "status-ok");
+      await loadPages(true);
+    } finally {
+      els.latestBtn.disabled = false;
+      if (runId === state.runId) setBusy(false);
+    }
+  }
+
+  function showEmptyMessage(title, detail, action = null) {
+    const box = document.createElement("div");
+    box.className = "empty";
+
+    const heading = document.createElement("b");
+    heading.textContent = title;
+    box.appendChild(heading);
+    box.appendChild(document.createElement("br"));
+    box.appendChild(document.createTextNode(detail));
+
+    if (action?.label && typeof action.onClick === "function") {
+      const wrap = document.createElement("div");
+      wrap.style.marginTop = "14px";
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = action.label;
+      button.addEventListener("click", () => { void action.onClick(); });
+
+      wrap.appendChild(button);
+      box.appendChild(wrap);
+    }
+
+    els.pages.replaceChildren(box);
+    updateHud();
+  }
+
+  function clearReader() {
+    stopLoading("", "");
+    els.pages.replaceChildren();
+    clearProgress();
+    showEmptyMessage(
+      "Cleared.",
+      "Paste a WeebCentral link in the menu and tap Open / Search to start a chapter."
+    );
+    setStatus("Cleared.", "status-ok", 2000);
+  }
+
+  async function testPreviewUrl() {
+    const url = currentPreviewUrl();
+
+    if (!els.base1.value.trim()) {
+      setStatus("Source URL prefix 1 is empty.", "status-bad", 3600);
+      return;
+    }
+
+    els.testBtn.disabled = true;
+    setStatus("Testing Source 1 with the current chapter and page…", "status-warn");
+
+    try {
+      let winner = null;
+      for (const variant of imageVariants(url)) {
+        if (await probeImage(variant.url, null, PROBE_TIMEOUT_MS, false)) {
+          winner = variant;
+          break;
+        }
+      }
+      setStatus(
+        winner
+          ? `Source 1 page loaded ${winner.isProxy ? `through ${winner.proxyName || "image proxy"}` : "directly"}.`
+          : "Source 1 page failed to load. Try Source 2, change the image proxy mode, or check the pattern.",
+        winner ? "status-ok" : "status-bad",
+        5000
+      );
+    } finally {
+      els.testBtn.disabled = false;
+    }
+  }
+
+  async function copyPreviewUrl() {
+    const url = currentPreviewUrl();
+    if (!url) return;
+
+    try {
+      await navigator.clipboard.writeText(url);
+      setStatus("Preview URL copied.", "status-ok", 2200);
+    } catch {
+      const area = document.createElement("textarea");
+      area.value = url;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.appendChild(area);
+      area.select();
+      try {
+        document.execCommand("copy");
+        setStatus("Preview URL copied.", "status-ok", 2200);
+      } catch {
+        setStatus("Could not copy automatically. Select the URL and copy it.", "status-warn", 4000);
+      }
+      area.remove();
+    }
+  }
+
+  function addPage(probeResult, { chapter, pageCode, exact = false }) {
+    const wrap = document.createElement("div");
+    wrap.className = "page-wrap";
+    wrap.dataset.chapter = chapter;
+    wrap.dataset.page = pageCode;
+
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.referrerPolicy = "no-referrer";
+    img.alt = `Chapter ${chapterCode(chapter)} page ${pageCode}`;
+
+    const badge = document.createElement("div");
+    badge.className = "page-badge";
+
+    const chapterLabel = document.createElement("span");
+    chapterLabel.className = "ch";
+    chapterLabel.textContent = chapterCode(chapter);
+
+    const pageLabel = document.createElement("span");
+    pageLabel.textContent = `P ${pageCode}`;
+
+    const sourceLabel = document.createElement("span");
+    sourceLabel.className = "src";
+    sourceLabel.textContent = probeResult.isProxy
+      ? (probeResult.proxyName || "PX")
+      : `S${probeResult.sourceIndex}`;
+
+    badge.append(chapterLabel, pageLabel, sourceLabel);
+
+    const candidates = [];
+    function addCandidate(candidate) {
+      const url = safeImageUrl(candidate?.url || "");
+      if (!url || candidates.some((item) => item.url === url)) return;
+      candidates.push({
+        ...candidate,
+        url,
+        originalUrl: safeImageUrl(candidate.originalUrl || url) || url
+      });
+    }
+
+    const probedOriginal = probeResult.originalUrl || probeResult.url;
+
+    /* Keep the URL that passed probing first, then its remaining variants. */
+    addCandidate({
+      url: probeResult.url,
+      originalUrl: probedOriginal,
+      sourceIndex: probeResult.sourceIndex,
+      isProxy: Boolean(probeResult.isProxy),
+      proxyName: probeResult.proxyName || ""
+    });
+    for (const variant of imageVariants(probedOriginal)) {
+      addCandidate({
+        url: variant.url,
+        originalUrl: variant.originalUrl,
+        sourceIndex: probeResult.sourceIndex,
+        isProxy: variant.isProxy,
+        proxyName: variant.proxyName
+      });
+    }
+
+    /* Try the alternate scan hostname and the configured second source. */
+    const mirrorUrl = alternateScanBase(probedOriginal);
+    if (mirrorUrl) {
+      for (const variant of imageVariants(mirrorUrl)) {
+        addCandidate({ ...variant, sourceIndex: probeResult.sourceIndex || 1 });
+      }
+    }
+
+    if (!exact) {
+      getBases().forEach((base, index) => {
+        const url = makeUrl(base, chapter, pageCode);
+        for (const variant of imageVariants(url)) {
+          addCandidate({ ...variant, sourceIndex: index + 1 });
+        }
+      });
+    }
+
+    let candidateIndex = 0;
+    let currentUrl = "";
+    let offlineTried = false;
+    let exactTried = false;
+    let proxyCandidatesAdded = false;
+
+    async function tryExactRemote() {
+      if (exactTried || exact) return false;
+      exactTried = true;
+
+      const url = await exactPageUrlFor(chapter, pageCode);
+      if (!url) return false;
+
+      addCandidate({ url, sourceIndex: 1 });
+      /* The exact source is now being attempted directly; start after it if it fails. */
+      candidateIndex = candidates.length;
+      currentUrl = url;
+      img.dataset.remote = url;
+      sourceLabel.textContent = "S1";
+      img.src = url;
+      return true;
+    }
+
+    function addProxyCandidates() {
+      if (proxyCandidatesAdded) return;
+      proxyCandidatesAdded = true;
+
+      const originals = candidates.filter((candidate) => !candidate.isProxy);
+      originals.forEach((candidate) => {
+        const originalUrl = candidate.originalUrl || candidate.url;
+        for (const variant of imageVariants(originalUrl)) {
+          if (!variant.isProxy) continue;
+          addCandidate({
+            url: variant.url,
+            originalUrl: variant.originalUrl,
+            sourceIndex: candidate.sourceIndex || 1,
+            isProxy: true,
+            proxyName: variant.proxyName
+          });
+        }
+      });
+    }
+
+    function finishCandidates() {
+      if (!exactTried && !exact) {
+        void tryExactRemote()
+          .then((used) => {
+            if (!used) {
+              addProxyCandidates();
+              if (candidateIndex < candidates.length) showCandidate();
+              else showPageError(wrap, chapter, pageCode);
+            }
+          })
+          .catch(() => {
+            addProxyCandidates();
+            if (candidateIndex < candidates.length) showCandidate();
+            else showPageError(wrap, chapter, pageCode);
+          });
+        return;
+      }
+
+      addProxyCandidates();
+      if (candidateIndex < candidates.length) showCandidate();
+      else showPageError(wrap, chapter, pageCode);
+    }
+
+    function showCandidate() {
+      if (candidateIndex >= candidates.length) {
+        finishCandidates();
+        return;
+      }
+
+      const candidate = candidates[candidateIndex++];
+      currentUrl = candidate.originalUrl || candidate.url;
+      img.dataset.remote = currentUrl;
+      sourceLabel.textContent = candidate.isProxy
+        ? (candidate.proxyName || "PX")
+        : `S${candidate.sourceIndex || 1}`;
+      img.src = candidate.url;
+    }
+
+    async function tryOfflineCopy(url = currentUrl) {
+      if (offlineTried || !url) return false;
+      offlineTried = true;
+
+      const objectUrl = await readOfflineImage(url);
+      if (!objectUrl) return false;
+
+      img.dataset.offline = "1";
+      img.src = objectUrl;
+      return true;
+    }
+
+    img.addEventListener("load", () => {
+      wrap.classList.add("is-loaded");
+      wrap.classList.remove("is-error");
+      wrap.querySelector(".page-error")?.remove();
+      if (currentUrl && img.dataset.offline !== "1") queueOfflineImage(currentUrl);
+      updateHud();
+    });
+
+    img.addEventListener("error", () => {
+      if (img.dataset.offline !== "1") {
+        void tryOfflineCopy().then((used) => {
+          if (used) return;
+          if (candidateIndex < candidates.length) showCandidate();
+          else finishCandidates();
+        });
+        return;
+      }
+
+      if (candidateIndex < candidates.length) showCandidate();
+      else finishCandidates();
+    });
+
+    img.addEventListener("click", () => openLightbox(img));
+    img.tabIndex = 0;
+    img.setAttribute("role", "button");
+    img.setAttribute("aria-label", `Open chapter ${chapterCode(chapter)} page ${pageCode} in the lightbox`);
+    img.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openLightbox(img);
+      }
+    });
+
+    wrap.append(img, badge);
+    els.pages.appendChild(wrap);
+
+    /* If offline, try the saved original immediately. If it is not saved,
+       the normal candidate chain will try the remote host and image proxy. */
+    if (navigator.onLine === false) {
+      currentUrl = candidates[0]?.originalUrl || candidates[0]?.url || "";
+      img.dataset.remote = currentUrl;
+      void tryOfflineCopy(currentUrl).then((used) => {
+        if (!used) showCandidate();
+      });
+    } else {
+      showCandidate();
+    }
+    updateHud();
+
+    return wrap;
+  }
+
+  function showPageError(wrap, chapter, pageCode) {
+    if (!wrap.isConnected) return;
+
+    wrap.classList.add("is-error");
+    wrap.querySelector(".page-error")?.remove();
+
+    const box = document.createElement("div");
+    box.className = "page-error";
+
+    const text = document.createElement("div");
+    text.textContent = `Page ${pageCode} could not be loaded from any source.`;
+
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "btn";
+    retry.textContent = "Retry page";
+    retry.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void retryPage(wrap, chapter, pageCode);
+    });
+
+    box.append(text, retry);
+    wrap.appendChild(box);
+  }
+
+  async function retryPage(wrap, chapter, pageCode) {
+    if (!wrap.isConnected) return;
+
+    const img = wrap.querySelector("img");
+    const badgeSource = wrap.querySelector(".page-badge .src");
+    if (!img) return;
+
+    wrap.classList.remove("is-error");
+    wrap.querySelector(".page-error")?.remove();
+    setStatus(`Retrying page ${pageCode}…`, "status-warn");
+
+    const urls = [];
+    const addUrl = (url, sourceIndex, isProxy = false, originalUrl = url, proxyName = "") => {
+      const safe = safeImageUrl(url);
+      if (!safe || urls.some((item) => item.url === safe)) return;
+      urls.push({
+        url: safe,
+        sourceIndex,
+        isProxy,
+        proxyName,
+        originalUrl: safeImageUrl(originalUrl) || safe
+      });
+    };
+
+    const originals = [];
+    const savedOriginal = img.dataset.remote || "";
+    if (savedOriginal) originals.push({ url: savedOriginal, sourceIndex: 1 });
+    getBases().forEach((base, index) => {
+      originals.push({ url: makeUrl(base, chapter, pageCode), sourceIndex: index + 1 });
+    });
+    originals.forEach((item) => {
+      for (const variant of imageVariants(item.url)) {
+        addUrl(variant.url, item.sourceIndex, variant.isProxy, variant.originalUrl, variant.proxyName);
+      }
+    });
+
+    for (const item of urls) {
+      if (!wrap.isConnected) return;
+      if (badgeSource) {
+        badgeSource.textContent = item.isProxy
+          ? (item.proxyName || "PX")
+          : `S${item.sourceIndex}`;
+      }
+      const ok = await probeImage(item.url, null, PROBE_TIMEOUT_MS, false);
+      if (ok) {
+        img.dataset.remote = item.originalUrl;
+        delete img.dataset.offline;
+        img.src = item.url;
+        setStatus(
+          item.isProxy
+            ? `Page ${pageCode} loaded through ${item.proxyName || "image proxy"}.`
+            : `Page ${pageCode} loaded from source ${item.sourceIndex}.`,
+          "status-ok",
+          3000
+        );
+        return;
+      }
+    }
+
+    showPageError(wrap, chapter, pageCode);
+    setStatus(`Page ${pageCode} is still unavailable from the image sources and proxy.`, "status-bad", 4200);
+  }
+
+  function updateHud() {
+    const wraps = els.pages.querySelectorAll(".page-wrap");
+    els.bottomChapterNav.hidden = wraps.length === 0;
+
+    /* Appended chapters keep their own page badges; show the label only when they mix. */
+    const chapterCount = new Set([...wraps].map((wrap) => wrap.dataset.chapter)).size;
+    els.pages.classList.toggle("is-multi", chapterCount > 1);
+
+    if (!wraps.length) {
+      els.readingHud.hidden = true;
+      return;
+    }
+
+    els.readingHud.hidden = false;
+    els.hudPages.textContent = `${wraps.length} page${wraps.length === 1 ? "" : "s"}`;
+    updateHudPosition();
+    scheduleProgressSave();
+  }
+
+  function updateHudPosition() {
+    if (els.readingHud.hidden) return;
+
+    const wraps = [...els.pages.querySelectorAll(".page-wrap")];
+    if (!wraps.length) return;
+
+    const middle = window.innerHeight / 2;
+    let current = null;
+    let bestDistance = Infinity;
+
+    for (const wrap of wraps) {
+      const rect = wrap.getBoundingClientRect();
+      if (rect.bottom < 0 || rect.top > window.innerHeight) continue;
+
+      const distance = Math.abs((rect.top + rect.bottom) / 2 - middle);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        current = wrap;
+      }
+    }
+
+    if (!current) return;
+
+    els.hudChapter.textContent = `Chapter ${chapterCode(current.dataset.chapter)}`;
+    els.hudPosition.textContent = `P ${current.dataset.page}`;
+  }
+
+  function scheduleHudUpdate() {
+    if (state.hudFrame) return;
+    state.hudFrame = setTimeout(() => {
+      state.hudFrame = 0;
+      updateHudPosition();
+    }, 80);
+  }
+
+  function lightboxImages() {
+    return [...els.pages.querySelectorAll(".page-wrap img")]
+      .filter((img) => img.naturalWidth > 0 && !img.closest(".page-wrap.is-error"));
+  }
+
+  function openLightbox(image) {
+    const images = lightboxImages();
+    const index = images.indexOf(image);
+    if (index < 0) return;
+
+    state.lightboxIndex = index;
+    state.lastFocus = document.activeElement;
+    state.zoom = 0;
+    els.lightbox.hidden = false;
+    document.body.classList.add("lightbox-open");
+    renderLightbox();
+    els.lbClose.focus();
+  }
+
+  function renderLightbox() {
+    const images = lightboxImages();
+
+    if (!images.length) {
+      closeLightbox();
+      return;
+    }
+
+    state.lightboxIndex = Math.max(0, Math.min(images.length - 1, state.lightboxIndex));
+    const image = images[state.lightboxIndex];
+    const wrap = image.closest(".page-wrap");
+    const source = image.currentSrc || image.src;
+    const chapter = wrap?.dataset.chapter || els.chapterBox.value;
+    const page = wrap?.dataset.page || "?";
+
+    els.lightboxImg.src = source;
+    els.lightboxImg.alt = image.alt;
+    els.lightboxCaption.textContent =
+      `Chapter ${chapterCode(chapter)} · Page ${page} · ${state.lightboxIndex + 1}/${images.length}`;
+    els.lbOpen.href = source;
+    els.lbDownload.href = source;
+    els.lbPrev.disabled = state.lightboxIndex === 0;
+    els.lbNext.disabled = state.lightboxIndex === images.length - 1;
+    applyZoom();
+    els.lightboxStage.scrollTo({ top: 0, left: 0 });
+  }
+
+  function closeLightbox() {
+    if (els.lightbox.hidden) return;
+
+    els.lightbox.hidden = true;
+    els.lightboxImg.removeAttribute("src");
+    document.body.classList.remove("lightbox-open");
+    state.lightboxIndex = -1;
+    state.lastFocus?.focus?.();
+    state.lastFocus = null;
+  }
+
+  function stepLightbox(delta) {
+    const images = lightboxImages();
+    const nextIndex = state.lightboxIndex + delta;
+    if (nextIndex < 0 || nextIndex >= images.length) return;
+
+    state.lightboxIndex = nextIndex;
+    state.zoom = 0;
+    renderLightbox();
+  }
+
+  function applyZoom() {
+    const image = els.lightboxImg;
+
+    if (state.zoom === 0) {
+      image.style.width = "";
+      image.style.maxWidth = "";
+      image.style.maxHeight = "";
+      els.lbZoomFit.textContent = "Fit";
+    } else {
+      image.style.maxWidth = "none";
+      image.style.maxHeight = "none";
+      image.style.width = `${state.zoom}%`;
+      els.lbZoomFit.textContent = `${state.zoom}%`;
+    }
+  }
+
+  function setZoom(value) {
+    state.zoom = Math.max(0, Math.min(400, value));
+    applyZoom();
+  }
+
+  function isPanelOpen() {
+    return els.panel.classList.contains("is-open");
+  }
+
+  function updatePanelMetrics() {
+    const height = Math.ceil(els.panel.getBoundingClientRect().height);
+    document.documentElement.style.setProperty("--panel-hide-distance", `${Math.max(0, height + 4)}px`);
+  }
+
+  function positionPanelTab() {
+    // The Menu tab stays in the same fixed position in both panel states.
+    els.panelTab.style.top = "env(safe-area-inset-top, 0px)";
+  }
+
+  function showPanel() {
+    clearTimeout(state.closeTimer);
+    updatePanelMetrics();
+    els.panel.classList.add("is-open");
+    document.body.classList.add("panel-open");
+    els.panel.inert = false;
+    els.panel.setAttribute("aria-hidden", "false");
+    els.panelTab.setAttribute("aria-expanded", "true");
+    els.panelTab.setAttribute("aria-label", "Close reader menu");
+    positionPanelTab();
+  }
+
+  function hidePanel() {
+    clearTimeout(state.closeTimer);
+    updatePanelMetrics();
+    els.panel.classList.remove("is-open");
+    document.body.classList.remove("panel-open");
+    els.panel.inert = true;
+    els.panel.setAttribute("aria-hidden", "true");
+    els.panelTab.setAttribute("aria-expanded", "false");
+    els.panelTab.setAttribute("aria-label", "Open reader menu");
+    els.panelTab.style.top = "env(safe-area-inset-top, 0px)";
+    document.activeElement?.blur?.();
+  }
+
+  function togglePanel() {
+    if (isPanelOpen()) hidePanel();
+    else showPanel();
+  }
+
+  function setHelpMode(mode) {
+    state.helpMode = mode === "advanced" ? "advanced" : "quick";
+    const advanced = state.helpMode === "advanced";
+
+    els.quickHelpTab.classList.toggle("active", !advanced);
+    els.advancedHelpTab.classList.toggle("active", advanced);
+    els.quickHelpContent.hidden = advanced;
+    els.advancedHelpContent.hidden = !advanced;
+    els.helpTitle.textContent = advanced ? "Advanced Guide" : "How to use the reader";
+    els.helpSubtitle.textContent = advanced
+      ? "Every button, box, setting and feature"
+      : "Fast setup and easy navigation";
+  }
+
+  function showHelp(mode = "quick") {
+    flushSave();
+    setHelpMode(mode);
+    els.helpOverlay.classList.add("show");
+    els.helpOverlay.setAttribute("aria-hidden", "false");
+    document.body.classList.add("help-open");
+    setTimeout(() => els.helpCloseBtn.focus(), 0);
+  }
+
+  function hideHelp() {
+    els.helpOverlay.classList.remove("show");
+    els.helpOverlay.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("help-open");
+    els.helpBtn.focus();
+  }
+
+  function trapFocus(container, event) {
+    const focusables = [...container.querySelectorAll(
+      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )].filter((element) => element.offsetParent !== null);
+
+    if (!focusables.length) return;
+
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  function exportSettings() {
+    flushSave();
+
+    const payload = {
+      app: "manga-image-reader",
+      version: SETTINGS_VERSION,
+      exportedAt: new Date().toISOString(),
+      groups: store.groups,
+      selectedGroup: state.activeGroup
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.href = url;
+    link.download = "manga_reader_settings.json";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    setStatus("Settings exported.", "status-ok", 2600);
+  }
+
+  async function importSettings(file) {
+    if (!file) return;
+
+    try {
+      const parsed = JSON.parse(await file.text());
+      const normalized = normalizeData(parsed);
+
+      if (!normalized) throw new Error("Invalid settings");
+
+      const count = Object.keys(normalized.groups).length;
+      if (Object.keys(store.groups).length && !confirm(`Import ${count} group(s) and replace the current groups?`)) {
+        return;
+      }
+
+      store = normalized;
+      state.activeGroup = store.selectedGroup;
+      persistStore();
+      renderGroupOptions(state.activeGroup);
+      els.groupName.value = state.activeGroup;
+      applyGroupData(store.groups[state.activeGroup]);
+      setStatus(`Imported ${count} group(s).`, "status-ok", 3200);
+    } catch {
+      setStatus("Could not import: the file is not valid reader settings.", "status-bad", 5000);
+    } finally {
+      els.importInput.value = "";
+    }
+  }
+
+  function init() {
+    const local = loadLocalStore();
+    const hadLocal = Boolean(local);
+
+    store = local || createDefaultStore();
+    state.activeGroup = store.selectedGroup;
+
+    renderGroupOptions(state.activeGroup);
+    els.groupName.value = state.activeGroup;
+    applyGroupData(store.groups[state.activeGroup]);
+    updatePanelMetrics();
+    hidePanel();
+    setBusy(false);
+    updateHud();
+
+    if (hadLocal) saveLocal(store);
+    else persistStore(false);
+
+    if (window.google && google.script && google.script.run) {
+      google.script.run
+        .withSuccessHandler((data) => {
+          if (hadLocal) return;
+
+          const normalized = normalizeData(data);
+          if (!normalized) return;
+
+          store = normalized;
+          state.activeGroup = store.selectedGroup;
+          saveLocal(store);
+          renderGroupOptions(state.activeGroup);
+          els.groupName.value = state.activeGroup;
+          applyGroupData(store.groups[state.activeGroup]);
+        })
+        .withFailureHandler(() => {})
+        .getSavedSettings();
+    }
+
+    /* Offline library: show what is saved, fold in older cached chapters, ask for
+       persistent storage so the browser does not evict downloaded pages. */
+    renderOfflineStats();
+    renderBackupStatus();
+    void migrateOfflineLibrary().then(() => filterChapterOptions()).catch(() => {});
+    try {
+      void navigator.storage?.persist?.()?.catch?.(() => {});
+    } catch {
+      /* Persistence is a hint; file:// and private windows can refuse it. */
+    }
+
+    /* Reopen the last chapter and jump back to the page that was on screen.
+       If that progress is gone, still bring back the chapter picker for the last series. */
+    if (!restoreSession()) restoreLastSeriesPicker();
+  }
+
+  /* group controls */
+  els.groupSelect.addEventListener("change", () => {
+    flushSave();
+    loadSelectedGroup();
+  });
+
+  els.newGroupBtn.addEventListener("click", () => {
+    flushSave();
+    newGroup();
+  });
+
+  els.saveGroupBtn.addEventListener("click", () => saveActiveGroup(true, true));
+  els.deleteGroupBtn.addEventListener("click", deleteGroup);
+  els.exportBtn.addEventListener("click", exportSettings);
+  els.importInput.addEventListener("change", () => void importSettings(els.importInput.files?.[0]));
+
+  els.groupName.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      saveActiveGroup(true, true);
+    }
+  });
+
+  /* link / search */
+  els.linkBtn.addEventListener("click", () => void handleLinkAction());
+
+  els.linkInput.addEventListener("input", scheduleLiveSearch);
+
+  els.linkInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void handleLinkAction();
+    }
+  });
+
+  els.chapterFilter.addEventListener("input", filterChapterOptions);
+
+  els.chapterFilter.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+
+    const index = bestChapterIndex >= 0
+      ? bestChapterIndex
+      : parseInt(els.chapterSelect.value, 10);
+    const item = state.link?.chapters?.[index];
+    if (Number.isInteger(index) && item) void openChapterItem(item, index);
+  });
+
+  els.chapterBestBtn.addEventListener("click", () => {
+    const index = bestChapterIndex >= 0
+      ? bestChapterIndex
+      : parseInt(els.chapterSelect.value, 10);
+    const item = state.link?.chapters?.[index];
+    if (Number.isInteger(index) && item) void openChapterItem(item, index);
+  });
+
+  els.chapterSelect.addEventListener("change", () => {
+    const index = parseInt(els.chapterSelect.value, 10);
+    const link = state.link;
+    if (!Number.isFinite(index) || !Array.isArray(link?.chapters)) return;
+    const item = link.chapters[index];
+    if (item) void openChapterItem(item, index);
+  });
+
+  els.chapterListBtn.addEventListener("click", () => {
+    const seriesUrl = state.link?.seriesUrl;
+    if (!seriesUrl) {
+      setStatus("Open a series first, then refresh its chapter list.", "status-warn", 4200);
+      return;
+    }
+    void ensureFullChapterList(seriesUrl, { force: true });
+  });
+
+  /* settings */
+  for (const key of SETTING_KEYS) {
+    if (key === "width" || key === "link") continue;
+    els[key].addEventListener("input", handleSettingChange);
+    els[key].addEventListener("change", handleSettingChange);
+  }
+
+  els.width.addEventListener("change", () => {
+    applyReaderWidth();
+    handleSettingChange();
+  });
+
+  /* reader actions */
+  els.loadBtn.addEventListener("click", () => void loadPages(true));
+  els.latestBtn.addEventListener("click", () => void findLatestChapter());
+  els.prevChapterBtn.addEventListener("click", prevChapter);
+  els.nextChapterBtn.addEventListener("click", () => void nextChapter());
+  els.autoNextBtn.addEventListener("click", () => void autoLoadNext());
+  els.stopBtn.addEventListener("click", () => stopLoading("Stopped."));
+  els.clearBtn.addEventListener("click", clearReader);
+  els.bottomPrevChapterBtn.addEventListener("click", prevChapter);
+  els.bottomNextChapterBtn.addEventListener("click", () => void nextChapter());
+  els.copyPreviewBtn.addEventListener("click", () => void copyPreviewUrl());
+  els.testBtn.addEventListener("click", () => void testPreviewUrl());
+
+  /* offline library */
+  els.downloadAllBtn.addEventListener("click", () => void downloadAllLoadedChapters());
+  els.downloadChapterBtn.addEventListener("click", () => void downloadChapterOffline());
+  els.exportFolderBtn.addEventListener("click", () => void exportLibraryToFolder());
+  els.importFolderBtn.addEventListener("click", () => void importLibraryFolder());
+  els.importFolderInput.addEventListener("change", () => void importLibraryFromInput());
+  els.offlineClearBtn.addEventListener("click", () => {
+    if (!window.confirm("Delete every chapter saved for offline reading?")) return;
+    void clearOfflineLibrary().then(() => {
+      setStatus("Offline chapters deleted.", "status-ok", 3200);
+    });
+  });
+
+  /* panel */
+  els.hidePanelBtn.addEventListener("click", hidePanel);
+  /* The dedicated early Menu button handler owns open/close state.
+     Do not auto-close on document clicks: this prevents click races and
+     accidental immediate closing on touch devices. */
+
+  /* help */
+  els.helpBtn.addEventListener("click", () => showHelp("quick"));
+  els.quickHelpTab.addEventListener("click", () => setHelpMode("quick"));
+  els.advancedHelpTab.addEventListener("click", () => setHelpMode("advanced"));
+  els.helpCloseBtn.addEventListener("click", hideHelp);
+  els.helpGotItBtn.addEventListener("click", hideHelp);
+
+  els.helpOverlay.addEventListener("click", (event) => {
+    if (event.target === els.helpOverlay) hideHelp();
+  });
+
+  /* lightbox */
+  els.lightboxImg.addEventListener("click", closeLightbox);
+  els.lbClose.addEventListener("click", closeLightbox);
+  els.lbPrev.addEventListener("click", () => stepLightbox(-1));
+  els.lbNext.addEventListener("click", () => stepLightbox(1));
+  els.lbZoomIn.addEventListener("click", () => setZoom(state.zoom === 0 ? 100 : state.zoom + 25));
+  els.lbZoomOut.addEventListener("click", () => {
+    setZoom(state.zoom === 0 ? 0 : (state.zoom - 25 < 50 ? 0 : state.zoom - 25));
+  });
+  els.lbZoomFit.addEventListener("click", () => setZoom(0));
+
+  els.lightboxStage.addEventListener("click", (event) => {
+    if (event.target === els.lightboxStage) closeLightbox();
+  });
+
+  /* keyboard shortcuts */
+  document.addEventListener("keydown", (event) => {
+    if (!els.lightbox.hidden) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeLightbox();
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        stepLightbox(-1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        stepLightbox(1);
+      } else if (event.key === "+" || event.key === "=") {
+        event.preventDefault();
+        setZoom(state.zoom === 0 ? 100 : state.zoom + 25);
+      } else if (event.key === "-" || event.key === "_") {
+        event.preventDefault();
+        setZoom(state.zoom === 0 ? 0 : (state.zoom - 25 < 50 ? 0 : state.zoom - 25));
+      } else if (event.key === "0") {
+        event.preventDefault();
+        setZoom(0);
+      } else if (event.key === "Tab") {
+        trapFocus(els.lightbox, event);
+      }
+      return;
+    }
+
+    if (els.helpOverlay.classList.contains("show")) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        hideHelp();
+      } else if (event.key === "Tab") {
+        trapFocus(els.helpOverlay.querySelector(".help-dialog"), event);
+      }
+      return;
+    }
+
+    const tag = event.target.tagName;
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || event.target.isContentEditable) return;
+
+    if (event.key.toLowerCase() === "p") {
+      event.preventDefault();
+      togglePanel();
+    } else if (event.key.toLowerCase() === "r") {
+      event.preventDefault();
+      void loadPages(true);
+    } else if (event.key === "Escape") {
+      hidePanel();
+    } else if (event.key === "ArrowLeft") {
+      prevChapter();
+    } else if (event.key === "ArrowRight") {
+      void nextChapter();
+    } else if (event.key === "?") {
+      event.preventDefault();
+      showHelp("quick");
+    }
+  });
+
+  window.addEventListener("scroll", () => {
+    scheduleHudUpdate();
+    scheduleProgressSave();
+  }, { passive: true });
+  window.addEventListener("resize", () => {
+    updatePanelMetrics();
+    positionPanelTab();
+    scheduleHudUpdate();
+  });
+  window.addEventListener("orientationchange", () => {
+    setTimeout(() => {
+      updatePanelMetrics();
+      positionPanelTab();
+    }, 80);
+  });
+
+  if (window.ResizeObserver) {
+    const panelObserver = new ResizeObserver(() => {
+      updatePanelMetrics();
+      positionPanelTab();
+    });
+    panelObserver.observe(els.panel);
+  }
+
+  window.addEventListener("beforeunload", () => {
+    flushSave();
+    saveProgress(true);
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      flushSave();
+      saveProgress(true);
+    }
+  });
+
+  init();
+})();
+  </script>
+</body>
+
+</html>
