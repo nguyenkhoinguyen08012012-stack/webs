@@ -892,6 +892,78 @@
       color: var(--muted);
     }
 
+    .quick-steps {
+      display: flex;
+      align-items: stretch;
+      gap: 6px;
+    }
+
+    .quick-step {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 5px;
+      padding: 12px 8px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, .03);
+      text-align: center;
+    }
+
+    .quick-step .step-icon {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 11px;
+      background: rgba(96, 165, 250, .12);
+      color: #93c5fd;
+    }
+
+    .quick-step .step-icon svg {
+      width: 21px;
+      height: 21px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .quick-step b { font-size: 13px; }
+    .quick-step small { color: var(--muted); font-size: 11px; line-height: 1.3; }
+
+    .step-arrow {
+      align-self: center;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .quick-start {
+      width: 100%;
+      min-height: 48px;
+      margin-top: 12px;
+      font-weight: 800;
+    }
+
+    .quick-mini {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .quick-mini span {
+      flex: 1;
+      text-align: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
     .help-footer {
       padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
       border-top: 1px solid var(--line);
@@ -1007,6 +1079,10 @@
       .help-title { font-size: 18px; }
       .help-grid { grid-template-columns: 1fr; }
       .quick-setup { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .quick-steps { flex-direction: column; }
+      .step-arrow { transform: rotate(90deg); }
+      .quick-step { flex-direction: row; justify-content: flex-start; text-align: left; gap: 10px; }
+      .quick-step .step-icon { flex: 0 0 38px; }
       .help-close, .help-footer button { min-height: 48px; }
     }
 
@@ -1110,7 +1186,7 @@
           <button id="offlineClearBtn" class="danger" type="button">Clear offline</button>
         </div>
         <input id="importFolderInput" type="file" webkitdirectory multiple hidden>
-        <div class="chapter-picker-hint">Every chapter you open is saved on this device automatically, so it can open again without Wi-Fi. “Download all loaded chapters” fills in missing pages. “Download to folder” asks you to choose a destination folder. If your browser cannot write to a folder, the reader prepares a ZIP backup; click the download link shown below if the automatic download does not start. Unzip the ZIP before using “Import folder”. Image files are checked by their actual file type before they are added, so an HTML error page is not mistaken for an image.</div>
+        <div class="chapter-picker-hint">Chapters are saved on this device for offline reading.</div>
         <div id="backupStatus" class="chapter-picker-hint" hidden></div>
       </div>
 
@@ -1177,7 +1253,7 @@
                 <option value="proxy-only">Proxy only</option>
                 <option value="off">Off — direct only</option>
               </select>
-              <span class="chapter-picker-hint">On networks that block the image host, pages retry through Google (G), then P1/P2 (shown in the page badge). Works for pattern URLs and exact chapter pages.</span>
+              <span class="chapter-picker-hint">Retries blocked images through a proxy.</span>
             </div>
           </div>
 
@@ -1296,31 +1372,27 @@
       </div>
 
       <div id="quickHelpContent" class="help-content">
-        <section class="help-section">
-          <h3>Fastest way to read</h3>
-          <p>Paste a WeebCentral chapter or series link into <b>Open from WeebCentral</b>, then tap <b>Open / Search</b>. A series link opens its newest chapter; a chapter link opens that exact chapter.</p>
-          <p>Pages appear first. The <b>Chapters</b> picker fills in a moment later, once the complete list has loaded.</p>
-          <p>No link yet? Type the series title in the same box. Results update as you type, and the closest match is highlighted at the top; pick a cover to open that series.</p>
-          <p>After a series opens, use the <b>Chapters</b> picker to jump to any chapter. <b>Refresh</b> re-fetches the complete chapter list.</p>
-          <p>Using a different image host? Open <b>Source pattern &amp; scan settings</b> and fill in the URL fields.</p>
-        </section>
-        <section class="help-section">
-          <h3>Fast navigation</h3>
-          <p><b>Previous Chapter</b> opens the older chapter and replaces the view. <b>Next Chapter</b> opens the newer chapter and appends it. Enter a number in <b>Auto next</b> and tap <b>Load Next</b> to add several chapters automatically.</p>
-        </section>
-        <section class="help-section">
-          <h3>Reader basics</h3>
-          <div class="quick-setup">
-            <div><b>Stop</b><span>Cancel a long scan safely.</span></div>
-            <div><b>Click a page</b><span>Open the zoomable lightbox.</span></div>
-            <div><b>Page HUD</b><span>See your current page while scrolling.</span></div>
-            <div><b>Backup retry</b><span>Failed pages try Source 2 automatically.</span></div>
+        <div class="quick-steps">
+          <div class="quick-step">
+            <span class="step-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1-1"/></svg></span>
+            <b>1. Paste</b>
+            <small>WeebCentral link or title</small>
           </div>
-        </section>
-        <section class="help-section">
-          <h3>Phone</h3>
-          <p>Tap <b>Menu</b> to open the controls. Scroll inside the menu. Use <b>Hide Panel</b> or tap outside to close it.</p>
-        </section>
+          <span class="step-arrow" aria-hidden="true">→</span>
+          <div class="quick-step">
+            <span class="step-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></span>
+            <b>2. Open / Search</b>
+            <small>Pick a series or chapter</small>
+          </div>
+          <span class="step-arrow" aria-hidden="true">→</span>
+          <div class="quick-step">
+            <span class="step-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h12v18H6a2 2 0 0 1-2-2z"/><path d="M8 3v18"/></svg></span>
+            <b>3. Scroll to read</b>
+            <small>Tap a page to zoom</small>
+          </div>
+        </div>
+        <button id="quickStartBtn" class="btn quick-start" type="button">Paste link — open the menu</button>
+        <div class="quick-mini"><span>Menu = controls</span><span>Tap outside to close</span></div>
       </div>
 
       <div id="advancedHelpContent" class="help-content" hidden>
@@ -1383,10 +1455,6 @@
             <div><b>Esc</b><p>Hide the menu or close the guide/lightbox.</p></div>
             <div><b>?</b><p>Open this guide.</p></div>
           </div>
-        </section>
-        <section class="help-section">
-          <h3>About link lookup</h3>
-          <p>WeebCentral blocks direct browser requests, so link and title lookup is read through <b>r.jina.ai</b>. Only the page you request is sent; your saved settings stay in this browser. If lookup is slow or unavailable, paste a chapter link again or use the manual source pattern.</p>
         </section>
       </div>
 
@@ -1452,6 +1520,13 @@
   const SEARCH_CACHE_TTL = 5 * 60 * 1000;
   const SEARCH_CACHE_LIMIT = 40;
   const LIVE_SEARCH_DELAY = 260;
+  /* A failed page retries itself so a momentary network hiccup does not leave a dead
+     page in the middle of a chapter. The manual button still works after these run out. */
+  const AUTO_PAGE_RETRIES = 3;
+  /* While scrolling, refresh up to this many upcoming pages that are stuck or failed. */
+  const LOOKAHEAD_PAGES = 4;
+  const LOOKAHEAD_STALE_MS = 4000;
+  const LOOKAHEAD_COOLDOWN_MS = 5000;
 
   const els = {
     panel: $("controlPanel"),
@@ -1541,6 +1616,7 @@
     quickHelpTab: $("quickHelpTab"),
     advancedHelpTab: $("advancedHelpTab"),
     quickHelpContent: $("quickHelpContent"),
+    quickStartBtn: $("quickStartBtn"),
     advancedHelpContent: $("advancedHelpContent"),
     helpTitle: $("helpTitle"),
     helpSubtitle: $("helpSubtitle")
@@ -1617,6 +1693,9 @@
     lightboxIndex: -1,
     zoom: 0,
     hudFrame: 0,
+    lookaheadTimer: 0,
+    lastLookaheadIndex: -1,
+    lastLookaheadCount: 0,
     lastFocus: null,
     link: null,
     linkAbort: null,
@@ -7242,6 +7321,7 @@
       img.dataset.remote = url;
       sourceLabel.textContent = "S1";
       img.src = url;
+      wrap.dataset.loadStarted = String(Date.now());
       return true;
     }
 
@@ -7301,6 +7381,7 @@
         ? (candidate.proxyName || "PX")
         : `S${candidate.sourceIndex || 1}`;
       img.src = candidate.url;
+      wrap.dataset.loadStarted = String(Date.now());
     }
 
     async function tryOfflineCopy(url = currentUrl) {
@@ -7316,6 +7397,9 @@
     }
 
     img.addEventListener("load", () => {
+      clearPageAutoRetry(wrap);
+      delete wrap.dataset.autoRetries;
+      delete wrap.dataset.lookaheadAt;
       wrap.classList.add("is-loaded");
       wrap.classList.remove("is-error");
       wrap.querySelector(".page-error")?.remove();
@@ -7367,11 +7451,38 @@
     return wrap;
   }
 
+  function clearPageAutoRetry(wrap) {
+    if (wrap._autoRetryTimer) {
+      clearTimeout(wrap._autoRetryTimer);
+      wrap._autoRetryTimer = null;
+    }
+  }
+
+  function schedulePageAutoRetry(wrap, chapter, pageCode, text) {
+    clearPageAutoRetry(wrap);
+    if (navigator.onLine === false) return;
+
+    const used = parseInt(wrap.dataset.autoRetries || "0", 10) || 0;
+    if (used >= AUTO_PAGE_RETRIES) return;
+
+    wrap.dataset.autoRetries = String(used + 1);
+    const configured = Math.max(0, Math.min(10000, parseInt(els.retryWait.value, 10) || 0));
+    const delay = Math.max(800, configured);
+    text.textContent = `Page ${pageCode} could not be loaded. Auto-retrying (${used + 1}/${AUTO_PAGE_RETRIES})…`;
+
+    wrap._autoRetryTimer = setTimeout(() => {
+      wrap._autoRetryTimer = null;
+      if (!wrap.isConnected || !wrap.classList.contains("is-error")) return;
+      void retryPage(wrap, chapter, pageCode);
+    }, delay);
+  }
+
   function showPageError(wrap, chapter, pageCode) {
     if (!wrap.isConnected) return;
 
     wrap.classList.add("is-error");
     wrap.querySelector(".page-error")?.remove();
+    clearPageAutoRetry(wrap);
 
     const box = document.createElement("div");
     box.className = "page-error";
@@ -7385,11 +7496,14 @@
     retry.textContent = "Retry page";
     retry.addEventListener("click", (event) => {
       event.stopPropagation();
+      clearPageAutoRetry(wrap);
+      wrap.dataset.autoRetries = "0";
       void retryPage(wrap, chapter, pageCode);
     });
 
     box.append(text, retry);
     wrap.appendChild(box);
+    schedulePageAutoRetry(wrap, chapter, pageCode, text);
   }
 
   async function retryPage(wrap, chapter, pageCode) {
@@ -7440,6 +7554,7 @@
         img.dataset.remote = item.originalUrl;
         delete img.dataset.offline;
         img.src = item.url;
+        wrap.dataset.loadStarted = String(Date.now());
         setStatus(
           item.isProxy
             ? `Page ${pageCode} loaded through ${item.proxyName || "image proxy"}.`
@@ -7470,6 +7585,10 @@
 
     els.readingHud.hidden = false;
     els.hudPages.textContent = `${wraps.length} page${wraps.length === 1 ? "" : "s"}`;
+    if (state.lastLookaheadIndex < 0 || state.lastLookaheadCount !== wraps.length) {
+      state.lastLookaheadIndex = currentPageIndex(wraps);
+      state.lastLookaheadCount = wraps.length;
+    }
     updateHudPosition();
     scheduleProgressSave();
   }
@@ -7507,6 +7626,51 @@
       state.hudFrame = 0;
       updateHudPosition();
     }, 80);
+  }
+
+  /* Called when the reader advances to a later page. Only pages that are already
+     broken or have been hanging for a while are refreshed, so healthy pages are
+     never reloaded unnecessarily. */
+  function retryUpcomingPages(wraps, currentIndex) {
+    if (navigator.onLine === false) return;
+
+    const last = Math.min(wraps.length - 1, currentIndex + LOOKAHEAD_PAGES);
+    const now = Date.now();
+
+    for (let i = currentIndex + 1; i <= last; i += 1) {
+      const wrap = wraps[i];
+      const img = wrap?.querySelector("img");
+      if (!img || img.dataset.offline === "1" || img.naturalWidth > 0) continue;
+
+      const failed = wrap.classList.contains("is-error") || (img.complete && img.naturalWidth === 0);
+      const stale = !img.complete &&
+        (now - (Number(wrap.dataset.loadStarted) || 0)) > LOOKAHEAD_STALE_MS;
+      if (!failed && !stale) continue;
+      if (now - (Number(wrap.dataset.lookaheadAt) || 0) < LOOKAHEAD_COOLDOWN_MS) continue;
+
+      wrap.dataset.lookaheadAt = String(now);
+      void retryPage(wrap, wrap.dataset.chapter, wrap.dataset.page);
+    }
+  }
+
+  function scheduleLookaheadRetry() {
+    if (state.lookaheadTimer) return;
+    state.lookaheadTimer = setTimeout(() => {
+      state.lookaheadTimer = 0;
+      const wraps = [...els.pages.querySelectorAll(".page-wrap")];
+      if (!wraps.length) {
+        state.lastLookaheadIndex = -1;
+        state.lastLookaheadCount = 0;
+        return;
+      }
+
+      const index = currentPageIndex(wraps);
+      if (state.lastLookaheadIndex >= 0 && index > state.lastLookaheadIndex) {
+        retryUpcomingPages(wraps, index);
+      }
+      state.lastLookaheadIndex = index;
+      state.lastLookaheadCount = wraps.length;
+    }, 150);
   }
 
   function lightboxImages() {
@@ -7916,6 +8080,14 @@
   els.advancedHelpTab.addEventListener("click", () => setHelpMode("advanced"));
   els.helpCloseBtn.addEventListener("click", hideHelp);
   els.helpGotItBtn.addEventListener("click", hideHelp);
+  els.quickStartBtn.addEventListener("click", () => {
+    hideHelp();
+    showPanel();
+    setTimeout(() => {
+      els.linkInput.focus();
+      els.linkInput.select?.();
+    }, 0);
+  });
 
   els.helpOverlay.addEventListener("click", (event) => {
     if (event.target === els.helpOverlay) hideHelp();
@@ -7997,6 +8169,7 @@
   window.addEventListener("scroll", () => {
     scheduleHudUpdate();
     scheduleProgressSave();
+    scheduleLookaheadRetry();
   }, { passive: true });
   window.addEventListener("resize", () => {
     updatePanelMetrics();
